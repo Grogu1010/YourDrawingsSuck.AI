@@ -1,0 +1,2 @@
+# YourDrawingsSuck.AI
+YOUR DRAWINGS SUCK, YOU A**HOLE!!
