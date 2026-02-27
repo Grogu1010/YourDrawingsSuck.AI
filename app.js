@@ -208,6 +208,67 @@ function distance(a, b) {
   return Math.sqrt(total);
 }
 
+function cosineDistance(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denom === 0) return 1;
+  return 1 - dot / denom;
+}
+
+function buildPrototypes(dataset) {
+  const byLabel = new Map();
+
+  for (const item of dataset) {
+    if (!byLabel.has(item.label)) {
+      byLabel.set(item.label, {
+        count: 0,
+        vectorSum: new Array(GRID_SIZE * GRID_SIZE).fill(0),
+        featureSum: {
+          fillRatio: 0,
+          aspectRatio: 0,
+          compactness: 0,
+          symmetryX: 0,
+          symmetryY: 0,
+          edgeDensity: 0,
+          lengthNorm: 0,
+          straightness: 0,
+          strokeCount: 0,
+        },
+      });
+    }
+
+    const bucket = byLabel.get(item.label);
+    const features = item.features || combineFeatures(item.vector, []);
+    bucket.count += 1;
+
+    for (let i = 0; i < item.vector.length; i += 1) {
+      bucket.vectorSum[i] += item.vector[i];
+    }
+
+    for (const key of Object.keys(bucket.featureSum)) {
+      bucket.featureSum[key] += features[key] || 0;
+    }
+  }
+
+  return [...byLabel.entries()].map(([label, bucket]) => ({
+    label,
+    count: bucket.count,
+    vector: bucket.vectorSum.map((value) => value / bucket.count),
+    features: Object.fromEntries(
+      Object.entries(bucket.featureSum).map(([key, value]) => [key, value / bucket.count])
+    ),
+  }));
+}
+
 function App() {
   const canvasRef = useRef(null);
   const isDrawingRef = useRef(false);
@@ -218,6 +279,8 @@ function App() {
   const [prompt, setPrompt] = useState(() => randomPrompt());
   const [guess, setGuess] = useState("unknown");
   const [confidence, setConfidence] = useState(0);
+
+  const prototypes = useMemo(() => buildPrototypes(dataset), [dataset]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -317,18 +380,46 @@ function App() {
 
     const vec = vectorizeCanvas();
     const features = combineFeatures(vec, strokesRef.current);
-    let best = { label: "unknown", dist: Infinity };
-
-    for (const item of dataset) {
-      const pixelDist = distance(vec, item.vector);
+    const scoredExamples = dataset.map((item) => {
       const itemFeatures = item.features || combineFeatures(item.vector, []);
+      const pixelDist = distance(vec, item.vector) / Math.sqrt(vec.length);
+      const angularDist = cosineDistance(vec, item.vector);
       const shapeDist = featureDistance(features, itemFeatures);
-      const dist = pixelDist * 0.7 + shapeDist * 2.2;
-      if (dist < best.dist) best = { label: item.label, dist };
+      const dist = pixelDist * 1.9 + angularDist * 1.4 + shapeDist * 1.7;
+      return { label: item.label, dist };
+    });
+
+    const scoredPrototypes = prototypes.map((proto) => {
+      const pixelDist = distance(vec, proto.vector) / Math.sqrt(vec.length);
+      const angularDist = cosineDistance(vec, proto.vector);
+      const shapeDist = featureDistance(features, proto.features);
+      const sampleBonus = Math.min(proto.count, 12) / 120;
+      const dist = pixelDist * 1.6 + angularDist * 1.2 + shapeDist * 1.5 - sampleBonus;
+      return { label: proto.label, dist };
+    });
+
+    const votes = new Map();
+    const nearest = [...scoredExamples].sort((a, b) => a.dist - b.dist).slice(0, 9);
+
+    for (const neighbor of nearest) {
+      const weight = 1 / Math.max(neighbor.dist, 0.05);
+      votes.set(neighbor.label, (votes.get(neighbor.label) || 0) + weight);
     }
 
-    const conf = Math.max(1, Math.round((1 - best.dist / 11) * 100));
-    setGuess(best.label);
+    for (const proto of scoredPrototypes) {
+      const weight = 0.9 / Math.max(proto.dist, 0.05);
+      votes.set(proto.label, (votes.get(proto.label) || 0) + weight);
+    }
+
+    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
+    const [bestLabel = "unknown", bestScore = 0] = ranked[0] || [];
+    const secondScore = ranked[1]?.[1] || 0;
+    const voteTotal = ranked.reduce((sum, [, score]) => sum + score, 0);
+    const margin = bestScore - secondScore;
+    const certainty = voteTotal > 0 ? bestScore / voteTotal : 0;
+    const conf = Math.max(1, Math.min(99, Math.round((certainty * 0.7 + margin * 0.3) * 100)));
+
+    setGuess(bestLabel);
     setConfidence(conf);
   };
 
