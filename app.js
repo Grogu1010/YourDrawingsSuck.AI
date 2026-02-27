@@ -55,6 +55,81 @@ function softmax(values) {
   return exps.map((value) => value / total);
 }
 
+function boundingBox(vector) {
+  let minX = GRID_SIZE;
+  let maxX = -1;
+  let minY = GRID_SIZE;
+  let maxY = -1;
+
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const value = vector[y * GRID_SIZE + x];
+      if (value <= 0.05) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+
+  return { minX, maxX, minY, maxY };
+}
+
+function normalizeVector(vector) {
+  const box = boundingBox(vector);
+  if (!box) return vector;
+
+  const width = box.maxX - box.minX + 1;
+  const height = box.maxY - box.minY + 1;
+  const scale = Math.max(width, height);
+
+  const output = new Array(vector.length).fill(0);
+  const offsetX = Math.floor((GRID_SIZE - scale) / 2);
+  const offsetY = Math.floor((GRID_SIZE - scale) / 2);
+
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const sourceX = box.minX + ((x - offsetX) / scale) * width;
+      const sourceY = box.minY + ((y - offsetY) / scale) * height;
+      const ix = Math.floor(sourceX);
+      const iy = Math.floor(sourceY);
+
+      if (ix < box.minX || ix > box.maxX || iy < box.minY || iy > box.maxY) continue;
+
+      const value = vector[iy * GRID_SIZE + ix];
+      output[y * GRID_SIZE + x] = value > 0.05 ? value : 0;
+    }
+  }
+
+  return output;
+}
+
+function buildLabelPrototypes(dataset) {
+  const grouped = dataset.reduce((acc, item) => {
+    if (!acc[item.label]) acc[item.label] = [];
+    acc[item.label].push(normalizeVector(item.vector));
+    return acc;
+  }, {});
+
+  return Object.entries(grouped).reduce((acc, [label, vectors]) => {
+    const prototype = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+    vectors.forEach((vector) => {
+      for (let i = 0; i < vector.length; i += 1) {
+        prototype[i] += vector[i];
+      }
+    });
+
+    for (let i = 0; i < prototype.length; i += 1) {
+      prototype[i] /= vectors.length;
+    }
+
+    acc[label] = prototype;
+    return acc;
+  }, {});
+}
+
 
 function App() {
   const canvasRef = useRef(null);
@@ -201,10 +276,12 @@ function App() {
       return;
     }
 
-    const { vec } = drawingStats;
+    const vec = normalizeVector(drawingStats.vec);
     const newestTimestamp = Math.max(...dataset.map((item) => item.ts));
+    const labelPrototypes = buildLabelPrototypes(dataset);
     const scoredExamples = dataset.map((item) => {
-      const pixelDist = distance(vec, item.vector) / Math.sqrt(vec.length);
+      const normalizedExample = normalizeVector(item.vector);
+      const pixelDist = distance(vec, normalizedExample) / Math.sqrt(vec.length);
       const recencyBonus = Math.max(0, (item.ts - newestTimestamp) / (1000 * 60 * 60 * 24 * 14));
       return {
         label: item.label,
@@ -228,6 +305,12 @@ function App() {
       acc[item.label] = (acc[item.label] || 0) + vote;
       return acc;
     }, {});
+
+    Object.entries(labelPrototypes).forEach(([label, prototype]) => {
+      const prototypeDistance = distance(vec, prototype) / Math.sqrt(vec.length);
+      const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
+      labelScores[label] = (labelScores[label] || 0) + prototypeVote * 0.35;
+    });
 
     const rankedLabels = Object.entries(labelScores)
       .sort((a, b) => b[1] - a[1])
