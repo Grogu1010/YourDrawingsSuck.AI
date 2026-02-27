@@ -26,173 +26,12 @@ function loadDataset() {
         item &&
         typeof item.label === "string" &&
         Array.isArray(item.vector) &&
-        item.vector.length === GRID_SIZE * GRID_SIZE
+        item.vector.length === GRID_SIZE * GRID_SIZE &&
+        typeof item.ts === "number"
     );
   } catch {
     return [];
   }
-}
-
-function extractShapeFeatures(vector) {
-  const threshold = 0.2;
-  const active = [];
-  let ink = 0;
-
-  for (let i = 0; i < vector.length; i += 1) {
-    const value = vector[i];
-    ink += value;
-    if (value > threshold) {
-      active.push(i);
-    }
-  }
-
-  if (active.length === 0) {
-    return {
-      fillRatio: 0,
-      aspectRatio: 1,
-      compactness: 0,
-      symmetryX: 1,
-      symmetryY: 1,
-      edgeDensity: 0,
-      lengthNorm: 0,
-      straightness: 0,
-    };
-  }
-
-  let minX = GRID_SIZE;
-  let minY = GRID_SIZE;
-  let maxX = 0;
-  let maxY = 0;
-
-  for (const index of active) {
-    const x = index % GRID_SIZE;
-    const y = Math.floor(index / GRID_SIZE);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-
-  const width = maxX - minX + 1;
-  const height = maxY - minY + 1;
-  const boxArea = width * height;
-
-  let edgeCount = 0;
-  let symmetryMatchesX = 0;
-  let symmetryMatchesY = 0;
-  let symmetryChecksX = 0;
-  let symmetryChecksY = 0;
-
-  for (let y = minY; y <= maxY; y += 1) {
-    for (let x = minX; x <= maxX; x += 1) {
-      const idx = y * GRID_SIZE + x;
-      const on = vector[idx] > threshold;
-      if (!on) continue;
-
-      const neighbors = [
-        [x - 1, y],
-        [x + 1, y],
-        [x, y - 1],
-        [x, y + 1],
-      ];
-
-      if (
-        neighbors.some(([nx, ny]) => {
-          if (nx < minX || ny < minY || nx > maxX || ny > maxY) return true;
-          return vector[ny * GRID_SIZE + nx] <= threshold;
-        })
-      ) {
-        edgeCount += 1;
-      }
-
-      const mirrorX = maxX - (x - minX);
-      const mirrorY = maxY - (y - minY);
-
-      symmetryChecksX += 1;
-      symmetryChecksY += 1;
-      if (vector[y * GRID_SIZE + mirrorX] > threshold) symmetryMatchesX += 1;
-      if (vector[mirrorY * GRID_SIZE + x] > threshold) symmetryMatchesY += 1;
-    }
-  }
-
-  return {
-    fillRatio: ink / (GRID_SIZE * GRID_SIZE),
-    aspectRatio: width / Math.max(height, 1),
-    compactness: active.length / Math.max(boxArea, 1),
-    symmetryX: symmetryMatchesX / Math.max(symmetryChecksX, 1),
-    symmetryY: symmetryMatchesY / Math.max(symmetryChecksY, 1),
-    edgeDensity: edgeCount / Math.max(active.length, 1),
-    lengthNorm: 0,
-    straightness: 0,
-  };
-}
-
-function extractStrokeFeatures(strokes) {
-  if (!strokes.length) {
-    return { lengthNorm: 0, straightness: 0, strokeCount: 0 };
-  }
-
-  const diagonal = Math.sqrt(500 * 500 + 500 * 500);
-  let totalLength = 0;
-  let weightedStraightness = 0;
-
-  for (const stroke of strokes) {
-    if (stroke.length < 2) continue;
-
-    let length = 0;
-    for (let i = 1; i < stroke.length; i += 1) {
-      const dx = stroke[i].x - stroke[i - 1].x;
-      const dy = stroke[i].y - stroke[i - 1].y;
-      length += Math.sqrt(dx * dx + dy * dy);
-    }
-
-    const dx = stroke[stroke.length - 1].x - stroke[0].x;
-    const dy = stroke[stroke.length - 1].y - stroke[0].y;
-    const directDistance = Math.sqrt(dx * dx + dy * dy);
-    const straightness = directDistance / Math.max(length, 1);
-
-    totalLength += length;
-    weightedStraightness += straightness * length;
-  }
-
-  return {
-    lengthNorm: Math.min(totalLength / diagonal, 1.5),
-    straightness: weightedStraightness / Math.max(totalLength, 1),
-    strokeCount: strokes.length,
-  };
-}
-
-function combineFeatures(vector, strokes = []) {
-  return {
-    ...extractShapeFeatures(vector),
-    ...extractStrokeFeatures(strokes),
-  };
-}
-
-function featureDistance(a, b) {
-  const aspectA = Math.log(a.aspectRatio + 1e-6);
-  const aspectB = Math.log(b.aspectRatio + 1e-6);
-  const strokeCountA = Math.min(a.strokeCount || 0, 8) / 8;
-  const strokeCountB = Math.min(b.strokeCount || 0, 8) / 8;
-
-  const terms = [
-    [a.fillRatio, b.fillRatio, 1.4],
-    [aspectA, aspectB, 1.1],
-    [a.compactness, b.compactness, 1.3],
-    [a.symmetryX, b.symmetryX, 0.8],
-    [a.symmetryY, b.symmetryY, 0.8],
-    [a.edgeDensity, b.edgeDensity, 1.1],
-    [a.lengthNorm, b.lengthNorm, 1.3],
-    [a.straightness, b.straightness, 1.4],
-    [strokeCountA, strokeCountB, 0.7],
-  ];
-
-  let total = 0;
-  for (const [x, y, weight] of terms) {
-    const delta = x - y;
-    total += weight * delta * delta;
-  }
-  return Math.sqrt(total);
 }
 
 function saveDataset(dataset) {
@@ -208,66 +47,6 @@ function distance(a, b) {
   return Math.sqrt(total);
 }
 
-function cosineDistance(a, b) {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i += 1) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  if (denom === 0) return 1;
-  return 1 - dot / denom;
-}
-
-function buildPrototypes(dataset) {
-  const byLabel = new Map();
-
-  for (const item of dataset) {
-    if (!byLabel.has(item.label)) {
-      byLabel.set(item.label, {
-        count: 0,
-        vectorSum: new Array(GRID_SIZE * GRID_SIZE).fill(0),
-        featureSum: {
-          fillRatio: 0,
-          aspectRatio: 0,
-          compactness: 0,
-          symmetryX: 0,
-          symmetryY: 0,
-          edgeDensity: 0,
-          lengthNorm: 0,
-          straightness: 0,
-          strokeCount: 0,
-        },
-      });
-    }
-
-    const bucket = byLabel.get(item.label);
-    const features = item.features || combineFeatures(item.vector, []);
-    bucket.count += 1;
-
-    for (let i = 0; i < item.vector.length; i += 1) {
-      bucket.vectorSum[i] += item.vector[i];
-    }
-
-    for (const key of Object.keys(bucket.featureSum)) {
-      bucket.featureSum[key] += features[key] || 0;
-    }
-  }
-
-  return [...byLabel.entries()].map(([label, bucket]) => ({
-    label,
-    count: bucket.count,
-    vector: bucket.vectorSum.map((value) => value / bucket.count),
-    features: Object.fromEntries(
-      Object.entries(bucket.featureSum).map(([key, value]) => [key, value / bucket.count])
-    ),
-  }));
-}
 
 function App() {
   const canvasRef = useRef(null);
@@ -283,8 +62,6 @@ function App() {
   const [confidence, setConfidence] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
-
-  const prototypes = useMemo(() => buildPrototypes(dataset), [dataset]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -417,52 +194,30 @@ function App() {
     }
 
     const { vec } = drawingStats;
-    const features = combineFeatures(vec, strokesRef.current);
+    const newestTimestamp = Math.max(...dataset.map((item) => item.ts));
     const scoredExamples = dataset.map((item) => {
-      const itemFeatures = item.features || combineFeatures(item.vector, []);
       const pixelDist = distance(vec, item.vector) / Math.sqrt(vec.length);
-      const angularDist = cosineDistance(vec, item.vector);
-      const shapeDist = featureDistance(features, itemFeatures);
-      const dist = pixelDist * 1.9 + angularDist * 1.4 + shapeDist * 1.7;
-      return { label: item.label, dist };
+      const recencyBonus = Math.max(0, (item.ts - newestTimestamp) / (1000 * 60 * 60 * 24 * 14));
+      return {
+        label: item.label,
+        score: pixelDist - recencyBonus,
+      };
     });
 
-    const scoredPrototypes = prototypes.map((proto) => {
-      const pixelDist = distance(vec, proto.vector) / Math.sqrt(vec.length);
-      const angularDist = cosineDistance(vec, proto.vector);
-      const shapeDist = featureDistance(features, proto.features);
-      const sampleBonus = Math.min(proto.count, 12) / 120;
-      const dist = pixelDist * 1.6 + angularDist * 1.2 + shapeDist * 1.5 - sampleBonus;
-      return { label: proto.label, dist };
-    });
+    const ranked = scoredExamples.sort((a, b) => a.score - b.score);
+    const [best = null, second = null] = ranked;
 
-    const votes = new Map();
-    const nearest = [...scoredExamples].sort((a, b) => a.dist - b.dist).slice(0, 9);
-
-    for (const neighbor of nearest) {
-      const weight = 1 / Math.max(neighbor.dist, 0.05);
-      votes.set(neighbor.label, (votes.get(neighbor.label) || 0) + weight);
+    if (!best) {
+      setGuess("unknown");
+      setConfidence(0);
+      return;
     }
 
-    for (const proto of scoredPrototypes) {
-      const weight = 0.9 / Math.max(proto.dist, 0.05);
-      votes.set(proto.label, (votes.get(proto.label) || 0) + weight);
-    }
+    const margin = Math.max(0, (second?.score ?? best.score + 1) - best.score);
+    const conf = Math.max(1, Math.min(99, Math.round((1 - Math.min(best.score, 1)) * 100 + margin * 20)));
+    const lowConfidence = conf < 60;
 
-    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1]);
-    const [bestLabel = "unknown", bestScore = 0] = ranked[0] || [];
-    const secondScore = ranked[1]?.[1] || 0;
-    const voteTotal = ranked.reduce((sum, [, score]) => sum + score, 0);
-    const margin = bestScore - secondScore;
-    const certainty = voteTotal > 0 ? bestScore / voteTotal : 0;
-    const prototypeWeight = Math.min(prototypes.length / 10, 1);
-    const conf = Math.max(
-      1,
-      Math.min(99, Math.round((certainty * 0.65 + margin * 0.25 + prototypeWeight * 0.1) * 100))
-    );
-    const lowConfidence = conf < 60 || margin < 0.12;
-
-    setGuess(bestLabel);
+    setGuess(best.label);
     setConfidence(conf);
     setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
   };
@@ -479,7 +234,7 @@ function App() {
     }, 300);
 
     return () => clearInterval(intervalId);
-  }, [dataset, prototypes]);
+  }, [dataset]);
 
   const saveDrawing = () => {
     const drawingStats = getDrawingStats();
@@ -490,8 +245,7 @@ function App() {
     }
 
     const { vec } = drawingStats;
-    const features = combineFeatures(vec, strokesRef.current);
-    const updated = [...dataset, { label: prompt, vector: vec, features, ts: Date.now() }].slice(-2000);
+    const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
     setPrompt(randomPrompt());
