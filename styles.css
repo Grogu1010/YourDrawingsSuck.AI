@@ -91,6 +91,10 @@ button.secondary {
   color: white;
 }
 
+button.secondary.active {
+  background: #0f766e;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

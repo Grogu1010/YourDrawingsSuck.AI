@@ -280,6 +280,7 @@ function App() {
   const [guess, setGuess] = useState("unknown");
   const [confidence, setConfidence] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
+  const [isErasing, setIsErasing] = useState(false);
 
   const prototypes = useMemo(() => buildPrototypes(dataset), [dataset]);
 
@@ -294,6 +295,13 @@ function App() {
     ctx.strokeStyle = "#111827";
     ctx.lineWidth = 14;
   }, []);
+
+  useEffect(() => {
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    ctx.strokeStyle = isErasing ? "#ffffff" : "#111827";
+    ctx.lineWidth = isErasing ? 26 : 14;
+  }, [isErasing]);
 
   const getPoint = (event) => {
     const canvas = canvasRef.current;
@@ -449,11 +457,16 @@ function App() {
       1,
       Math.min(99, Math.round((certainty * 0.65 + margin * 0.25 + prototypeWeight * 0.1) * 100))
     );
-    const lowConfidence = conf < 28 || margin < 0.12;
+    const lowConfidence = conf < 60 || margin < 0.12;
 
-    setGuess(lowConfidence ? "not sure yet" : bestLabel);
+    setGuess(lowConfidence ? "unknown" : bestLabel);
     setConfidence(conf);
-    setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes." : "");
+    setStatusMessage(lowConfidence ? "Not confident enough to guess yet — try cleaner strokes." : "");
+  };
+
+  const stopDrawingAndGuess = () => {
+    stopDrawing();
+    guessDrawing();
   };
 
   const saveDrawing = () => {
@@ -498,14 +511,15 @@ function App() {
             aria-label="drawing area"
             onMouseDown={startDrawing}
             onMouseMove={draw}
-            onMouseUp={stopDrawing}
-            onMouseLeave={stopDrawing}
+            onMouseUp={stopDrawingAndGuess}
+            onMouseLeave={stopDrawingAndGuess}
             onTouchStart={startDrawing}
             onTouchMove={draw}
-            onTouchEnd={stopDrawing}
+            onTouchEnd={stopDrawingAndGuess}
           ></canvas>
           <div className="row">
-            <button className="primary" onClick={guessDrawing}>Guess my drawing</button>
+            <button className={`secondary ${!isErasing ? "active" : ""}`} onClick={() => setIsErasing(false)}>Draw</button>
+            <button className={`secondary ${isErasing ? "active" : ""}`} onClick={() => setIsErasing(true)}>Eraser</button>
             <button className="secondary" onClick={saveDrawing}>Save to training set + Next prompt</button>
             <button className="warn" onClick={clearCanvas}>Clear</button>
           </div>
