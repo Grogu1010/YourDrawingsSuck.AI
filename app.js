@@ -279,6 +279,7 @@ function App() {
   const [prompt, setPrompt] = useState(() => randomPrompt());
   const [guess, setGuess] = useState("unknown");
   const [confidence, setConfidence] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("");
 
   const prototypes = useMemo(() => buildPrototypes(dataset), [dataset]);
 
@@ -349,6 +350,7 @@ function App() {
     activeStrokeRef.current = null;
     setGuess("unknown");
     setConfidence(0);
+    setStatusMessage("");
   };
 
   const vectorizeCanvas = () => {
@@ -371,14 +373,39 @@ function App() {
     return vec;
   };
 
+  const getDrawingStats = () => {
+    const vec = vectorizeCanvas();
+    const totalInk = vec.reduce((sum, value) => sum + value, 0);
+    const activePixels = vec.reduce((count, value) => count + (value > 0.18 ? 1 : 0), 0);
+    const drawnStrokeCount = strokesRef.current.filter((stroke) => stroke.length > 1).length;
+
+    return {
+      vec,
+      totalInk,
+      activePixels,
+      drawnStrokeCount,
+      hasMeaningfulDrawing: totalInk > 5 && activePixels > 8 && drawnStrokeCount > 0,
+    };
+  };
+
   const guessDrawing = () => {
-    if (dataset.length === 0) {
-      setGuess("Need training data first");
+    const drawingStats = getDrawingStats();
+
+    if (!drawingStats.hasMeaningfulDrawing) {
+      setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
+      setGuess("unknown");
       setConfidence(0);
       return;
     }
 
-    const vec = vectorizeCanvas();
+    if (dataset.length === 0) {
+      setGuess("Need training data first");
+      setConfidence(0);
+      setStatusMessage("Train me with a few drawings before guessing.");
+      return;
+    }
+
+    const { vec } = drawingStats;
     const features = combineFeatures(vec, strokesRef.current);
     const scoredExamples = dataset.map((item) => {
       const itemFeatures = item.features || combineFeatures(item.vector, []);
@@ -417,20 +444,34 @@ function App() {
     const voteTotal = ranked.reduce((sum, [, score]) => sum + score, 0);
     const margin = bestScore - secondScore;
     const certainty = voteTotal > 0 ? bestScore / voteTotal : 0;
-    const conf = Math.max(1, Math.min(99, Math.round((certainty * 0.7 + margin * 0.3) * 100)));
+    const prototypeWeight = Math.min(prototypes.length / 10, 1);
+    const conf = Math.max(
+      1,
+      Math.min(99, Math.round((certainty * 0.65 + margin * 0.25 + prototypeWeight * 0.1) * 100))
+    );
+    const lowConfidence = conf < 28 || margin < 0.12;
 
-    setGuess(bestLabel);
+    setGuess(lowConfidence ? "not sure yet" : bestLabel);
     setConfidence(conf);
+    setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes." : "");
   };
 
   const saveDrawing = () => {
-    const vec = vectorizeCanvas();
+    const drawingStats = getDrawingStats();
+
+    if (!drawingStats.hasMeaningfulDrawing) {
+      setStatusMessage("Nope — draw first. Blank/erased canvas won't be saved to training.");
+      return;
+    }
+
+    const { vec } = drawingStats;
     const features = combineFeatures(vec, strokesRef.current);
     const updated = [...dataset, { label: prompt, vector: vec, features, ts: Date.now() }].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
     setPrompt(randomPrompt());
     clearCanvas();
+    setStatusMessage("Saved to training set. Nice.");
   };
 
   const promptCounts = useMemo(
@@ -468,6 +509,7 @@ function App() {
             <button className="secondary" onClick={saveDrawing}>Save to training set + Next prompt</button>
             <button className="warn" onClick={clearCanvas}>Clear</button>
           </div>
+          {statusMessage && <p className="status-msg">{statusMessage}</p>}
         </section>
 
         <aside className="card">

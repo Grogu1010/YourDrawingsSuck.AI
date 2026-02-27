@@ -62,6 +62,13 @@ canvas {
   margin-top: 0.75rem;
 }
 
+.status-msg {
+  margin: 0.75rem 0 0;
+  color: #c7f9e5;
+  font-weight: 600;
+}
+
+
 button {
   border: 0;
   border-radius: 9px;
