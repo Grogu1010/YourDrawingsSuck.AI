@@ -47,6 +47,14 @@ function distance(a, b) {
   return Math.sqrt(total);
 }
 
+function softmax(values) {
+  if (values.length === 0) return [];
+  const peak = Math.max(...values);
+  const exps = values.map((value) => Math.exp(value - peak));
+  const total = exps.reduce((sum, value) => sum + value, 0);
+  return exps.map((value) => value / total);
+}
+
 
 function App() {
   const canvasRef = useRef(null);
@@ -205,7 +213,27 @@ function App() {
     });
 
     const ranked = scoredExamples.sort((a, b) => a.score - b.score);
-    const [best = null, second = null] = ranked;
+    const topK = ranked.slice(0, Math.min(24, ranked.length));
+
+    const promptCounts = dataset.reduce((acc, item) => {
+      acc[item.label] = (acc[item.label] || 0) + 1;
+      return acc;
+    }, {});
+
+    const labelScores = topK.reduce((acc, item) => {
+      const count = promptCounts[item.label] || 1;
+      const priorPenalty = Math.log1p(count) * 0.01;
+      const safeDistance = Math.max(0.001, item.score + 0.08 + priorPenalty);
+      const vote = 1 / safeDistance;
+      acc[item.label] = (acc[item.label] || 0) + vote;
+      return acc;
+    }, {});
+
+    const rankedLabels = Object.entries(labelScores)
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, score]) => ({ label, score }));
+
+    const [best = null, second = null] = rankedLabels;
 
     if (!best) {
       setGuess("unknown");
@@ -213,8 +241,11 @@ function App() {
       return;
     }
 
-    const margin = Math.max(0, (second?.score ?? best.score + 1) - best.score);
-    const conf = Math.max(1, Math.min(99, Math.round((1 - Math.min(best.score, 1)) * 100 + margin * 20)));
+    const probabilities = softmax(rankedLabels.map((entry) => entry.score));
+    const topProbability = probabilities[0] || 0;
+    const secondProbability = probabilities[1] || 0;
+    const margin = Math.max(0, topProbability - secondProbability);
+    const conf = Math.max(1, Math.min(99, Math.round(topProbability * 100 + margin * 30)));
     const lowConfidence = conf < 60;
 
     setGuess(best.label);
