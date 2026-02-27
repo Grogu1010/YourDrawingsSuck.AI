@@ -5,7 +5,7 @@ const OBJECTS = [
   "cloud", "sun", "moon", "star", "flower", "cup", "book", "chair", "table", "phone",
   "clock", "pizza", "burger", "ice cream", "guitar", "drum", "camera", "airplane", "rocket", "boat",
   "train", "bus", "robot", "monster", "dragon", "castle", "crown", "shoe", "hat", "glasses",
-  "toothbrush", "key", "lock", "lamp", "cookie", "donut", "snail", "frog", "whale", "snack"
+  "toothbrush", "key", "lock", "lamp", "cookie", "donut", "snail", "frog", "whale", "tennis ball"
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
