@@ -274,10 +274,12 @@ function App() {
   const isDrawingRef = useRef(false);
   const strokesRef = useRef([]);
   const activeStrokeRef = useRef(null);
+  const drawingRevisionRef = useRef(0);
+  const lastGuessedRevisionRef = useRef(-1);
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
-  const [guess, setGuess] = useState("unknown");
+  const [guess, setGuess] = useState("start drawing");
   const [confidence, setConfidence] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
@@ -340,6 +342,7 @@ function App() {
     ctx.lineTo(point.x, point.y);
     ctx.stroke();
     activeStrokeRef.current?.push(point);
+    drawingRevisionRef.current += 1;
   };
 
   const stopDrawing = () => {
@@ -356,7 +359,8 @@ function App() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     strokesRef.current = [];
     activeStrokeRef.current = null;
-    setGuess("unknown");
+    drawingRevisionRef.current += 1;
+    setGuess("start drawing");
     setConfidence(0);
     setStatusMessage("");
   };
@@ -401,7 +405,6 @@ function App() {
 
     if (!drawingStats.hasMeaningfulDrawing) {
       setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
-      setGuess("unknown");
       setConfidence(0);
       return;
     }
@@ -459,15 +462,24 @@ function App() {
     );
     const lowConfidence = conf < 60 || margin < 0.12;
 
-    setGuess(lowConfidence ? "unknown" : bestLabel);
+    setGuess(bestLabel);
     setConfidence(conf);
-    setStatusMessage(lowConfidence ? "Not confident enough to guess yet — try cleaner strokes." : "");
+    setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
   };
 
   const stopDrawingAndGuess = () => {
     stopDrawing();
-    guessDrawing();
   };
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      if (drawingRevisionRef.current === lastGuessedRevisionRef.current) return;
+      lastGuessedRevisionRef.current = drawingRevisionRef.current;
+      guessDrawing();
+    }, 300);
+
+    return () => clearInterval(intervalId);
+  }, [dataset, prototypes]);
 
   const saveDrawing = () => {
     const drawingStats = getDrawingStats();
