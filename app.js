@@ -1097,11 +1097,41 @@ function runLiveAlgorithms(vector, dataset) {
     };
   }
 
+  const prepared = prepareLiveDataset(dataset);
+  return runLiveAlgorithmsPrepared(vector, prepared);
+}
+
+function prepareLiveDataset(dataset) {
+  const normalizedDataset = dataset.map((item) => ({
+    label: item.label,
+    normalizedVector: normalizeVector(item.vector),
+  }));
+
+  const prototypesNormalized = buildLabelPrototypes(
+    normalizedDataset.map((item) => ({ label: item.label, vector: item.normalizedVector }))
+  );
+
+  return {
+    normalizedDataset,
+    prototypesNormalized,
+  };
+}
+
+function runLiveAlgorithmsPrepared(vector, prepared) {
+  const { normalizedDataset, prototypesNormalized } = prepared;
+
+  if (!normalizedDataset.length) {
+    return {
+      hyperDraw: { label: "Need training data first", confidence: 0 },
+      hyperDrawV2: { label: "Need training data first", confidence: 0 },
+    };
+  }
+
   const normalizedInput = normalizeVector(vector);
-  const normalizedDistances = dataset
+  const normalizedDistances = normalizedDataset
     .map((item) => ({
       label: item.label,
-      distance: distance(normalizedInput, normalizeVector(item.vector)) / Math.sqrt(vector.length),
+      distance: distance(normalizedInput, item.normalizedVector) / Math.sqrt(vector.length),
     }))
     .sort((a, b) => a.distance - b.distance);
 
@@ -1111,7 +1141,6 @@ function runLiveAlgorithms(vector, dataset) {
     return acc;
   }, {});
 
-  const prototypesNormalized = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: normalizeVector(item.vector) })));
   Object.entries(prototypesNormalized).forEach(([label, prototype]) => {
     const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
     const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
@@ -1431,6 +1460,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("draw");
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [lastDoneResults, setLastDoneResults] = useState([]);
+  const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
     saveAlgorithmStats(algorithmStats);
@@ -1603,7 +1633,7 @@ function App() {
       return;
     }
 
-    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithms(drawingStats.vec, dataset);
+    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(drawingStats.vec, preparedLiveDataset);
     const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
     const conf = Math.max(1, Math.min(99, selected.confidence));
     const lowConfidence = conf < 60;
@@ -1660,7 +1690,7 @@ function App() {
     }
 
     const { vec } = drawingStats;
-    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithms(vec, dataset);
+    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(vec, preparedLiveDataset);
     const results = runAlgorithms(vec, dataset);
 
     setCompareResults({
