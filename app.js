@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1175,6 +1175,7 @@ function runAlgorithms(vector, dataset) {
       { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: "Need training data first", confidence: 0 },
       { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: "Need training data first", confidence: 0 },
       { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: "Need training data first", confidence: 0 },
+      { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1244,6 +1245,7 @@ function runAlgorithms(vector, dataset) {
     return {
       label: ranked[0]?.[0] || "unknown",
       confidence: Math.round((probabilities[0] || 0) * 100),
+      labelScores,
     };
   })();
 
@@ -1261,6 +1263,28 @@ function runAlgorithms(vector, dataset) {
 
   const model32Best = model32Ranked[0] || { label: "unknown", score: 1 };
   const model32Confidence = Math.round((1 - Math.min(1, model32Best.score)) * 100);
+  const model32ScoresByLabel = model32Ranked.reduce((acc, entry) => {
+    acc[entry.label] = entry.score;
+    return acc;
+  }, {});
+
+  const model35Ranked = Object.keys(prototypesNormalized)
+    .map((label) => {
+      const model32Vote = 1 / Math.max(0.001, (model32ScoresByLabel[label] ?? 1) + 0.05);
+      const model34Vote = algorithm34.labelScores[label] || 0;
+      const agreementBonus = label === model32Best.label && label === algorithm34.label ? 0.12 : 0;
+      return {
+        label,
+        score: model32Vote * 0.45 + model34Vote * 0.55 + agreementBonus,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const model35Probabilities = softmax(model35Ranked.map((entry) => entry.score));
+  const model35 = {
+    label: model35Ranked[0]?.label || "unknown",
+    confidence: Math.round((model35Probabilities[0] || 0) * 100),
+  };
 
   const model21 = scoreTransformInvariantModel(vector, dataset, {
     k: 17,
@@ -1298,6 +1322,7 @@ function runAlgorithms(vector, dataset) {
     { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: model32Best.label, confidence: model32Confidence },
     { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: model33Label, confidence: model33Confidence },
     { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: algorithm34.label, confidence: algorithm34.confidence },
+    { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: model35.label, confidence: model35.confidence },
   ];
 }
 
@@ -1716,7 +1741,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, and 34.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, and 35.</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
