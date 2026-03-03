@@ -3,7 +3,7 @@
   --panel: #1a1f35;
   --ink: #f9fafb;
   --accent: #6ee7b7;
-  --danger: #f97316;
+  --danger: #dc2626;
   --muted: #9ca3af;
 }
 
@@ -78,7 +78,8 @@ button {
 }
 
 button.primary {
-  background: var(--accent);
+  background: #16a34a;
+  color: white;
 }
 
 button.warn {
@@ -99,6 +100,12 @@ button.secondary.active {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
+}
+
+.algo-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.6rem;
 }
 
 .stat {

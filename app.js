@@ -10,6 +10,7 @@ const OBJECTS = [
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
 const GRID_SIZE = 16;
+const ALGORITHM_COUNT = 9;
 
 function randomPrompt() {
   return OBJECTS[Math.floor(Math.random() * OBJECTS.length)];
@@ -130,6 +131,127 @@ function buildLabelPrototypes(dataset) {
   }, {});
 }
 
+function weightedDistance(a, b, weightFn) {
+  let total = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    total += d * d * weightFn(i);
+  }
+  return Math.sqrt(total);
+}
+
+function binarizeVector(vector, threshold = 0.2) {
+  return vector.map((value) => (value >= threshold ? 1 : 0));
+}
+
+function voteByInverseDistance(scoredExamples, k) {
+  const topK = scoredExamples.slice(0, Math.min(k, scoredExamples.length));
+  const labelScores = topK.reduce((acc, item) => {
+    const vote = 1 / Math.max(item.distance, 0.001);
+    acc[item.label] = (acc[item.label] || 0) + vote;
+    return acc;
+  }, {});
+
+  const ranked = Object.entries(labelScores).sort((a, b) => b[1] - a[1]);
+  const [label = "unknown"] = ranked[0] || [];
+  const probabilities = softmax(ranked.map(([, value]) => value));
+  const confidence = Math.round((probabilities[0] || 0) * 100);
+  return { label, confidence };
+}
+
+function runAlgorithms(vector, dataset) {
+  if (!dataset.length) {
+    return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({
+      id: index + 1,
+      name: `Algorithm ${index + 1}`,
+      label: "Need training data first",
+      confidence: 0,
+    }));
+  }
+
+  const normalizedInput = normalizeVector(vector);
+  const prototypesRaw = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: item.vector })));
+  const prototypesNormalized = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: normalizeVector(item.vector) })));
+
+  const rawDistances = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: distance(vector, item.vector) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  const normalizedDistances = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: distance(normalizedInput, normalizeVector(item.vector)) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  const algo1TopK = normalizedDistances.slice(0, Math.min(24, normalizedDistances.length));
+  const algo1LabelScores = algo1TopK.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1 / Math.max(item.distance + 0.08, 0.001);
+    return acc;
+  }, {});
+
+  Object.entries(prototypesNormalized).forEach(([label, prototype]) => {
+    const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+    const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
+    algo1LabelScores[label] = (algo1LabelScores[label] || 0) + prototypeVote * 0.35;
+  });
+
+  const algo1Ranked = Object.entries(algo1LabelScores).sort((a, b) => b[1] - a[1]);
+  const algo1Probs = softmax(algo1Ranked.map(([, score]) => score));
+  const algo1Guess = algo1Ranked[0]?.[0] || "unknown";
+  const algo1Confidence = Math.round((algo1Probs[0] || 0) * 100);
+
+  const nearestRaw = rawDistances[0];
+  const nearestNorm = normalizedDistances[0];
+  const knn5Raw = voteByInverseDistance(rawDistances, 5);
+  const knn11Norm = voteByInverseDistance(normalizedDistances, 11);
+
+  const prototypeRaw = Object.entries(prototypesRaw)
+    .map(([label, proto]) => ({ label, distance: distance(vector, proto) / Math.sqrt(vector.length) }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const prototypeNorm = Object.entries(prototypesNormalized)
+    .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const centerWeighted = dataset
+    .map((item) => ({
+      label: item.label,
+      distance:
+        weightedDistance(normalizedInput, normalizeVector(item.vector), (index) => {
+          const x = index % GRID_SIZE;
+          const y = Math.floor(index / GRID_SIZE);
+          const dx = Math.abs(x - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+          const dy = Math.abs(y - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+          return 1.4 - Math.min(1, (dx + dy) / 2) * 0.6;
+        }) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const binaryInput = binarizeVector(normalizedInput);
+  const binaryNearest = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: distance(binaryInput, binarizeVector(normalizeVector(item.vector))) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  return [
+    { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
+    { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
+    { id: 3, name: "Algorithm 3 (Nearest Normalized)", label: nearestNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestNorm?.distance || 1)) * 100) },
+    { id: 4, name: "Algorithm 4 (kNN-5 Raw)", label: knn5Raw.label, confidence: knn5Raw.confidence },
+    { id: 5, name: "Algorithm 5 (kNN-11 Normalized)", label: knn11Norm.label, confidence: knn11Norm.confidence },
+    { id: 6, name: "Algorithm 6 (Prototype Raw)", label: prototypeRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeRaw?.distance || 1)) * 100) },
+    { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
+    { id: 8, name: "Algorithm 8 (Center Weighted)", label: centerWeighted?.label || "unknown", confidence: Math.round((1 - Math.min(1, centerWeighted?.distance || 1)) * 100) },
+    { id: 9, name: "Algorithm 9 (Binary Shape)", label: binaryNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, binaryNearest?.distance || 1)) * 100) },
+  ];
+}
+
 
 function App() {
   const canvasRef = useRef(null);
@@ -145,6 +267,11 @@ function App() {
   const [confidence, setConfidence] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
+  const [devMode, setDevMode] = useState(false);
+  const [algorithmStats, setAlgorithmStats] = useState(() =>
+    Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({ id: index + 1, attempts: 0, correct: 0 }))
+  );
+  const [lastDoneResults, setLastDoneResults] = useState([]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -273,66 +400,18 @@ function App() {
       setGuess("Need training data first");
       setConfidence(0);
       setStatusMessage("Train me with a few drawings before guessing.");
+      setLastDoneResults([]);
       return;
     }
 
-    const vec = normalizeVector(drawingStats.vec);
-    const newestTimestamp = Math.max(...dataset.map((item) => item.ts));
-    const labelPrototypes = buildLabelPrototypes(dataset);
-    const scoredExamples = dataset.map((item) => {
-      const normalizedExample = normalizeVector(item.vector);
-      const pixelDist = distance(vec, normalizedExample) / Math.sqrt(vec.length);
-      const recencyBonus = Math.max(0, (item.ts - newestTimestamp) / (1000 * 60 * 60 * 24 * 14));
-      return {
-        label: item.label,
-        score: pixelDist - recencyBonus,
-      };
-    });
-
-    const ranked = scoredExamples.sort((a, b) => a.score - b.score);
-    const topK = ranked.slice(0, Math.min(24, ranked.length));
-
-    const promptCounts = dataset.reduce((acc, item) => {
-      acc[item.label] = (acc[item.label] || 0) + 1;
-      return acc;
-    }, {});
-
-    const labelScores = topK.reduce((acc, item) => {
-      const count = promptCounts[item.label] || 1;
-      const priorPenalty = Math.log1p(count) * 0.01;
-      const safeDistance = Math.max(0.001, item.score + 0.08 + priorPenalty);
-      const vote = 1 / safeDistance;
-      acc[item.label] = (acc[item.label] || 0) + vote;
-      return acc;
-    }, {});
-
-    Object.entries(labelPrototypes).forEach(([label, prototype]) => {
-      const prototypeDistance = distance(vec, prototype) / Math.sqrt(vec.length);
-      const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
-      labelScores[label] = (labelScores[label] || 0) + prototypeVote * 0.35;
-    });
-
-    const rankedLabels = Object.entries(labelScores)
-      .sort((a, b) => b[1] - a[1])
-      .map(([label, score]) => ({ label, score }));
-
-    const [best = null, second = null] = rankedLabels;
-
-    if (!best) {
-      setGuess("unknown");
-      setConfidence(0);
-      return;
-    }
-
-    const probabilities = softmax(rankedLabels.map((entry) => entry.score));
-    const topProbability = probabilities[0] || 0;
-    const secondProbability = probabilities[1] || 0;
-    const margin = Math.max(0, topProbability - secondProbability);
-    const conf = Math.max(1, Math.min(99, Math.round(topProbability * 100 + margin * 30)));
+    const results = runAlgorithms(drawingStats.vec, dataset);
+    const primary = results[0];
+    const conf = Math.max(1, Math.min(99, primary.confidence));
     const lowConfidence = conf < 60;
 
-    setGuess(best.label);
+    setGuess(primary.label);
     setConfidence(conf);
+    setLastDoneResults(results);
     setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
   };
 
@@ -359,12 +438,26 @@ function App() {
     }
 
     const { vec } = drawingStats;
+    const results = runAlgorithms(vec, dataset);
+    setLastDoneResults(results);
+    setAlgorithmStats((previous) =>
+      previous.map((algo) => {
+        const result = results.find((entry) => entry.id === algo.id);
+        const gotItRight = result?.label === prompt;
+        return {
+          ...algo,
+          attempts: algo.attempts + 1,
+          correct: algo.correct + (gotItRight ? 1 : 0),
+        };
+      })
+    );
+
     const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
     setPrompt(randomPrompt());
     clearCanvas();
-    setStatusMessage("Saved to training set. Nice.");
+    setStatusMessage("Done! Added to dataset and moved to the next prompt.");
   };
 
   const promptCounts = useMemo(
@@ -400,8 +493,11 @@ function App() {
           <div className="row">
             <button className={`secondary ${!isErasing ? "active" : ""}`} onClick={() => setIsErasing(false)}>Draw</button>
             <button className={`secondary ${isErasing ? "active" : ""}`} onClick={() => setIsErasing(true)}>Eraser</button>
-            <button className="secondary" onClick={saveDrawing}>Save to training set + Next prompt</button>
+            <button className="primary" onClick={saveDrawing}>Done</button>
             <button className="warn" onClick={clearCanvas}>Clear</button>
+            <button className={`secondary ${devMode ? "active" : ""}`} onClick={() => setDevMode((on) => !on)}>
+              {devMode ? "Dev Mode: ON" : "Dev Mode"}
+            </button>
           </div>
           {statusMessage && <p className="status-msg">{statusMessage}</p>}
         </section>
@@ -421,6 +517,27 @@ function App() {
               .slice(0, 8)
               .map(([label, count]) => <li key={label}>{label}: {count}</li>)}
           </ul>
+
+          {devMode && (
+            <>
+              <h3>Algorithm lab</h3>
+              <p>Click <strong>Done</strong> to log correctness rates for all 9 algorithms.</p>
+              <div className="algo-grid">
+                {algorithmStats.map((algo) => {
+                  const latest = lastDoneResults.find((entry) => entry.id === algo.id);
+                  const accuracy = algo.attempts ? Math.round((algo.correct / algo.attempts) * 100) : 0;
+                  return (
+                    <div className="stat" key={algo.id}>
+                      <div><strong>Algorithm {algo.id}</strong>{algo.id === 1 ? " (live model)" : ""}</div>
+                      <div>Guess: {latest?.label || "-"}</div>
+                      <div>Guess confidence: {latest?.confidence ?? 0}%</div>
+                      <div>Correctness rate: {accuracy}% ({algo.correct}/{algo.attempts})</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </aside>
       </div>
     </main>
