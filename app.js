@@ -610,6 +610,54 @@ function scoreTransformInvariantModelForSize(inputVector, dataset, size, options
   };
 }
 
+function runLiveAlgorithms(vector, dataset) {
+  if (!dataset.length) {
+    return {
+      hyperDraw: { label: "Need training data first", confidence: 0 },
+      hyperDrawV2: { label: "Need training data first", confidence: 0 },
+    };
+  }
+
+  const normalizedInput = normalizeVector(vector);
+  const normalizedDistances = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: distance(normalizedInput, normalizeVector(item.vector)) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  const algo1TopK = normalizedDistances.slice(0, Math.min(24, normalizedDistances.length));
+  const algo1LabelScores = algo1TopK.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1 / Math.max(item.distance + 0.08, 0.001);
+    return acc;
+  }, {});
+
+  const prototypesNormalized = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: normalizeVector(item.vector) })));
+  Object.entries(prototypesNormalized).forEach(([label, prototype]) => {
+    const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+    const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
+    algo1LabelScores[label] = (algo1LabelScores[label] || 0) + prototypeVote * 0.35;
+  });
+
+  const algo1Ranked = Object.entries(algo1LabelScores).sort((a, b) => b[1] - a[1]);
+  const algo1Probs = softmax(algo1Ranked.map(([, score]) => score));
+  const hyperDraw = {
+    label: algo1Ranked[0]?.[0] || "unknown",
+    confidence: Math.round((algo1Probs[0] || 0) * 100),
+  };
+
+  const prototypeNorm = Object.entries(prototypesNormalized)
+    .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const hyperDrawV2 = {
+    label: prototypeNorm?.label || "unknown",
+    confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100),
+  };
+
+  return { hyperDraw, hyperDrawV2 };
+}
+
 function runAlgorithms(vector, dataset) {
   if (!dataset.length) {
     return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({
@@ -872,7 +920,7 @@ function App() {
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
-  const [selectedModel, setSelectedModel] = useState("hyperdraw");
+  const [selectedModel, setSelectedModel] = useState("hyperdraw_v2");
   const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
   const [confidence, setConfidence] = useState(0);
@@ -1053,9 +1101,7 @@ function App() {
       return;
     }
 
-    const results = runAlgorithms(drawingStats.vec, dataset);
-    const hyperDraw = results.find((entry) => entry.id === HYPERDRAW_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === HYPERDRAW_V2_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
+    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithms(drawingStats.vec, dataset);
     const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
     const conf = Math.max(1, Math.min(99, selected.confidence));
     const lowConfidence = conf < 60;
@@ -1067,7 +1113,7 @@ function App() {
       hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
     });
     if (devMode) {
-      setLastDoneResults(results);
+      setLastDoneResults(runAlgorithms(drawingStats.vec, dataset));
     }
     setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
   };
@@ -1112,9 +1158,8 @@ function App() {
     }
 
     const { vec } = drawingStats;
+    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithms(vec, dataset);
     const results = runAlgorithms(vec, dataset);
-    const hyperDraw = results.find((entry) => entry.id === HYPERDRAW_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === HYPERDRAW_V2_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
 
     setCompareResults({
       hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
@@ -1267,8 +1312,8 @@ function App() {
             <label>
               Model:&nbsp;
               <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+                <option value="hyperdraw_v2">HyperDraw_v2 (default)</option>
                 <option value="hyperdraw">HyperDraw</option>
-                <option value="hyperdraw_v2">HyperDraw_v2</option>
               </select>
             </label>
             <button className={`secondary ${compareMode ? "active" : ""}`} onClick={() => setCompareMode((on) => !on)}>
