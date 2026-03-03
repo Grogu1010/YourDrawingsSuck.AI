@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 28;
+const ALGORITHM_COUNT = 29;
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -771,6 +771,111 @@ function scoreAlgo28(input, dataset32, options = {}) {
   );
 }
 
+function extractInvariantShapeDescriptor(vector, size) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const binary = normalized.map((value) => (value >= 0.2 ? 1 : 0));
+  const radialBins = new Array(12).fill(0);
+  let m00 = 0;
+  let m10 = 0;
+  let m01 = 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = binary[y * size + x];
+      m00 += value;
+      m10 += value * x;
+      m01 += value * y;
+    }
+  }
+
+  if (m00 === 0) {
+    return [0, ...radialBins, 0, 0, 0, 0, 0, 0, 0];
+  }
+
+  const cx = m10 / m00;
+  const cy = m01 / m00;
+  const safeScale = Math.max(1, size - 1);
+  const moments = { 20: 0, 02: 0, 11: 0, 30: 0, 03: 0, 21: 0, 12: 0 };
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = binary[y * size + x];
+      if (!value) continue;
+
+      const dx = x - cx;
+      const dy = y - cy;
+      const radius = Math.sqrt(dx * dx + dy * dy) / safeScale;
+      const bin = Math.min(radialBins.length - 1, Math.floor(radius * radialBins.length));
+      radialBins[bin] += 1;
+
+      moments[20] += dx * dx;
+      moments[02] += dy * dy;
+      moments[11] += dx * dy;
+      moments[30] += dx * dx * dx;
+      moments[03] += dy * dy * dy;
+      moments[21] += dx * dx * dy;
+      moments[12] += dx * dy * dy;
+    }
+  }
+
+  for (let i = 0; i < radialBins.length; i += 1) {
+    radialBins[i] /= m00;
+  }
+
+  const eta = (p, q) => {
+    const key = `${p}${q}`;
+    const gamma = (p + q) / 2 + 1;
+    return moments[key] / Math.pow(m00, gamma);
+  };
+
+  const n20 = eta(2, 0);
+  const n02 = eta(0, 2);
+  const n11 = eta(1, 1);
+  const n30 = eta(3, 0);
+  const n03 = eta(0, 3);
+  const n21 = eta(2, 1);
+  const n12 = eta(1, 2);
+
+  const hu = [
+    n20 + n02,
+    (n20 - n02) ** 2 + 4 * n11 ** 2,
+    (n30 - 3 * n12) ** 2 + (3 * n21 - n03) ** 2,
+    (n30 + n12) ** 2 + (n21 + n03) ** 2,
+    (n30 - 3 * n12) * (n30 + n12) * ((n30 + n12) ** 2 - 3 * (n21 + n03) ** 2) +
+      (3 * n21 - n03) * (n21 + n03) * (3 * (n30 + n12) ** 2 - (n21 + n03) ** 2),
+    (n20 - n02) * ((n30 + n12) ** 2 - (n21 + n03) ** 2) + 4 * n11 * (n30 + n12) * (n21 + n03),
+    (3 * n21 - n03) * (n30 + n12) * ((n30 + n12) ** 2 - 3 * (n21 + n03) ** 2) -
+      (n30 - 3 * n12) * (n21 + n03) * (3 * (n30 + n12) ** 2 - (n21 + n03) ** 2),
+  ].map((value) => {
+    const absValue = Math.abs(value);
+    if (absValue < 1e-12) return 0;
+    return Math.log10(absValue + 1e-12);
+  });
+
+  const occupancy = m00 / (size * size);
+  return [occupancy, ...radialBins, ...hu];
+}
+
+function scoreAlgo29(input, dataset32, options = {}) {
+  const { k = 27, distanceFloor = 0.008 } = options;
+  const inputDescriptor = extractInvariantShapeDescriptor(input, GRID_SIZE_V3);
+
+  const scored = dataset32
+    .map((item) => ({
+      label: item.label,
+      distance: featureDistance(inputDescriptor, extractInvariantShapeDescriptor(item.vector, GRID_SIZE_V3)),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  return voteByInverseDistance(
+    scored.map((entry) => ({
+      label: entry.label,
+      distance: Math.max(distanceFloor, entry.distance),
+    })),
+    k
+  );
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -1126,6 +1231,10 @@ function runAlgorithms(vector, dataset) {
     distanceFloor: 0.01,
     targetRadius: 9,
   });
+  const model29 = scoreAlgo29(input32, dataset32, {
+    k: 27,
+    distanceFloor: 0.008,
+  });
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -1168,15 +1277,18 @@ function runAlgorithms(vector, dataset) {
     { id: 26, name: "Algorithm 26 (v3 32x32 Rotation/Scale+Center)", label: model26.label, confidence: model26.confidence },
     { id: 27, name: "Algorithm 27 (v3 32x32 Detail Ensemble)", label: model27.label, confidence: model27.confidence },
     { id: 28, name: "Algorithm 28 (Moment Canonical + Edge-Chamfer + HOG-lite kNN)", label: model28.label, confidence: model28.confidence },
+    { id: 29, name: "Algorithm 29 (Invariant Moments + Radial Shape Signature)", label: model29.label, confidence: model29.confidence },
   ];
 }
 
 
 function App() {
   const canvasRef = useRef(null);
+  const offscreenCanvasRef = useRef(null);
   const isDrawingRef = useRef(false);
   const strokesRef = useRef([]);
   const activeStrokeRef = useRef(null);
+  const lastLiveGuessAtRef = useRef(0);
   const drawingRevisionRef = useRef(0);
   const lastGuessedRevisionRef = useRef(-1);
   const guessTimeoutRef = useRef(null);
@@ -1195,8 +1307,6 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
-  const [showIntro, setShowIntro] = useState(true);
-  const [introDetails, setIntroDetails] = useState(false);
   const [activeTab, setActiveTab] = useState("draw");
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [lastDoneResults, setLastDoneResults] = useState([]);
@@ -1221,7 +1331,7 @@ function App() {
     ctx.lineJoin = "round";
     ctx.strokeStyle = "#111827";
     ctx.lineWidth = 20;
-  }, [showIntro]);
+  }, []);
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
@@ -1268,7 +1378,12 @@ function App() {
     ctx.stroke();
     activeStrokeRef.current?.push(point);
     drawingRevisionRef.current += 1;
-    scheduleGuess();
+
+    const now = Date.now();
+    if (now - lastLiveGuessAtRef.current >= 80) {
+      lastLiveGuessAtRef.current = now;
+      scheduleGuess();
+    }
   };
 
   const stopDrawing = () => {
@@ -1303,11 +1418,14 @@ function App() {
     const canvas = canvasRef.current;
     if (!canvas) return new Array(GRID_SIZE * GRID_SIZE).fill(0);
 
-    const offscreen = document.createElement("canvas");
-    offscreen.width = GRID_SIZE;
-    offscreen.height = GRID_SIZE;
+    if (!offscreenCanvasRef.current) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = GRID_SIZE;
+      offscreen.height = GRID_SIZE;
+      offscreenCanvasRef.current = offscreen;
+    }
 
-    const octx = offscreen.getContext("2d");
+    const octx = offscreenCanvasRef.current.getContext("2d");
     octx.fillStyle = "white";
     octx.fillRect(0, 0, GRID_SIZE, GRID_SIZE);
     octx.drawImage(canvas, 0, 0, GRID_SIZE, GRID_SIZE);
@@ -1389,7 +1507,7 @@ function App() {
       guessTimeoutRef.current = null;
     }
 
-    const delay = immediate ? 0 : 140;
+    const delay = immediate ? 0 : 180;
     guessTimeoutRef.current = setTimeout(() => {
       if (drawingRevisionRef.current === lastGuessedRevisionRef.current && !immediate) return;
       lastGuessedRevisionRef.current = drawingRevisionRef.current;
@@ -1467,68 +1585,6 @@ function App() {
       }, {}),
     [dataset]
   );
-
-  if (showIntro) {
-    return (
-      <main className="app intro-screen">
-        <section className="card intro-card intro-card-glow">
-          <p className="intro-kicker">⚡ BREAKTHROUGH RELEASE</p>
-          <h1>INTRODUCING HYPERDRAWv2</h1>
-          <p className="subtitle">Faster guesses, stronger shape understanding, and significantly less default-label bias.</p>
-          <div className="intro-highlights">
-            <div className="intro-pill"><strong>v1:</strong>&nbsp;14% benchmark hit rate</div>
-            <div className="intro-pill"><strong>v2:</strong>&nbsp;38% benchmark hit rate</div>
-            <div className="intro-pill"><strong>Speed:</strong>&nbsp;53% faster stable guesses</div>
-          </div>
-          {!introDetails ? (
-            <div className="row">
-              <button className="primary" onClick={() => setIntroDetails(true)}>Learn More</button>
-              <button
-                className="secondary"
-                onClick={() => {
-                  setShowIntro(false);
-                }}
-              >
-                Continue
-              </button>
-            </div>
-          ) : (
-            <>
-              <p>
-                Full documentation is now available in the <strong>Articles</strong> tab and includes a long-form breakdown of
-                how v1 worked, why it plateaued, and how v2 was tuned to achieve dramatically better quality under the same
-                reference conditions.
-              </p>
-              <p>
-                It covers benchmark outcomes on 500+ references, formulas used in v1, tested strategy families from earlier
-                approaches, the final golden method, and progress on reducing overconfident bias toward classes like bird,
-                cloud, and cup.
-              </p>
-              <div className="row">
-                <button
-                  className="secondary"
-                  onClick={() => {
-                    setShowIntro(false);
-                    setActiveTab("articles");
-                  }}
-                >
-                  Open Articles
-                </button>
-                <button
-                  className="primary"
-                  onClick={() => {
-                    setShowIntro(false);
-                  }}
-                >
-                  Continue to Draw Lab
-                </button>
-              </div>
-            </>
-          )}
-        </section>
-      </main>
-    );
-  }
 
   return (
     <main className="app">
@@ -1626,7 +1682,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 27 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 29 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
