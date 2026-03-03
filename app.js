@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1172,6 +1172,7 @@ function runAlgorithms(vector, dataset) {
       { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: "Need training data first", confidence: 0 },
+      { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1206,6 +1207,21 @@ function runAlgorithms(vector, dataset) {
     .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
     .sort((a, b) => a.distance - b.distance)[0];
 
+  const normalizedInputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+  const model32Ranked = Object.entries(prototypesNormalized)
+    .map(([label, proto]) => {
+      const prototypeDistance = distance(normalizedInput, proto) / Math.sqrt(vector.length);
+      const lineDistance = featureDistance(normalizedInputFeatures, extractLineFeaturesForSize(proto, GRID_SIZE));
+      return {
+        label,
+        score: prototypeDistance * 0.6 + lineDistance * 0.4,
+      };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const model32Best = model32Ranked[0] || { label: "unknown", score: 1 };
+  const model32Confidence = Math.round((1 - Math.min(1, model32Best.score)) * 100);
+
   const model21 = scoreTransformInvariantModel(vector, dataset, {
     k: 17,
     distanceFloor: 0.02,
@@ -1217,6 +1233,7 @@ function runAlgorithms(vector, dataset) {
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
+    { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: model32Best.label, confidence: model32Confidence },
   ];
 }
 
@@ -1622,7 +1639,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, and 21.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, and 32.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
