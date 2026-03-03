@@ -15,13 +15,29 @@ const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 const ALGORITHM_COUNT = 19;
 
+function getStorageItem(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setStorageItem(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage write errors (private browsing, disabled storage, quota exceeded).
+  }
+}
+
 function randomPrompt() {
   return OBJECTS[Math.floor(Math.random() * OBJECTS.length)];
 }
 
 function loadDataset() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = getStorageItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -39,7 +55,7 @@ function loadDataset() {
 }
 
 function saveDataset(dataset) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(dataset));
+  setStorageItem(STORAGE_KEY, JSON.stringify(dataset));
 }
 
 function createDefaultAlgorithmStats() {
@@ -48,7 +64,7 @@ function createDefaultAlgorithmStats() {
 
 function loadAlgorithmStats() {
   try {
-    const raw = localStorage.getItem(ALGO_STATS_STORAGE_KEY);
+    const raw = getStorageItem(ALGO_STATS_STORAGE_KEY);
     if (!raw) return createDefaultAlgorithmStats();
 
     const parsed = JSON.parse(raw);
@@ -72,20 +88,20 @@ function loadAlgorithmStats() {
 }
 
 function saveAlgorithmStats(stats) {
-  localStorage.setItem(ALGO_STATS_STORAGE_KEY, JSON.stringify(stats));
+  setStorageItem(ALGO_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
 function hasSeenHyperDrawV2Intro() {
-  return localStorage.getItem(INTRO_SEEN_STORAGE_KEY) === "yes";
+  return getStorageItem(INTRO_SEEN_STORAGE_KEY) === "yes";
 }
 
 function markHyperDrawV2IntroSeen() {
-  localStorage.setItem(INTRO_SEEN_STORAGE_KEY, "yes");
+  setStorageItem(INTRO_SEEN_STORAGE_KEY, "yes");
 }
 
 function loadCompareStats() {
   try {
-    const raw = localStorage.getItem(COMPARE_STATS_STORAGE_KEY);
+    const raw = getStorageItem(COMPARE_STATS_STORAGE_KEY);
     if (!raw) return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, ties: 0 };
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") throw new Error("invalid stats");
@@ -101,7 +117,7 @@ function loadCompareStats() {
 }
 
 function saveCompareStats(stats) {
-  localStorage.setItem(COMPARE_STATS_STORAGE_KEY, JSON.stringify(stats));
+  setStorageItem(COMPARE_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
 function distance(a, b) {
@@ -535,7 +551,9 @@ function App() {
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -543,7 +561,7 @@ function App() {
     ctx.lineJoin = "round";
     ctx.strokeStyle = "#111827";
     ctx.lineWidth = 14;
-  }, []);
+  }, [showIntro]);
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
@@ -618,6 +636,8 @@ function App() {
 
   const vectorizeCanvas = () => {
     const canvas = canvasRef.current;
+    if (!canvas) return new Array(GRID_SIZE * GRID_SIZE).fill(0);
+
     const offscreen = document.createElement("canvas");
     offscreen.width = GRID_SIZE;
     offscreen.height = GRID_SIZE;
@@ -652,6 +672,8 @@ function App() {
   };
 
   const guessDrawing = () => {
+    if (!canvasRef.current) return;
+
     const drawingStats = getDrawingStats();
 
     if (!drawingStats.hasMeaningfulDrawing) {
@@ -691,6 +713,7 @@ function App() {
 
   useEffect(() => {
     const intervalId = setInterval(() => {
+      if (!canvasRef.current) return;
       if (drawingRevisionRef.current === lastGuessedRevisionRef.current) return;
       lastGuessedRevisionRef.current = drawingRevisionRef.current;
       guessDrawing();
