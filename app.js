@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 19;
+const ALGORITHM_COUNT = 24;
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -257,6 +257,88 @@ function generateRotations(vector) {
   return [rot0, rot90, rot180, rot270];
 }
 
+function flipVectorHorizontal(vector) {
+  const output = new Array(vector.length).fill(0);
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      output[y * GRID_SIZE + (GRID_SIZE - 1 - x)] = vector[y * GRID_SIZE + x];
+    }
+  }
+  return output;
+}
+
+function generateTransformVariants(vector) {
+  const rotations = generateRotations(vector);
+  const flipped = flipVectorHorizontal(vector);
+  return [...rotations, ...generateRotations(flipped)];
+}
+
+function scoreTransformInvariantModel(inputVector, dataset, options = {}) {
+  const {
+    k = 15,
+    distanceFloor = 0.02,
+    normalizeDataset = true,
+    featureWeight = 0.3,
+    centerWeightPower = 0,
+  } = options;
+
+  const inputNorm = normalizeVector(inputVector);
+  const inputFeatures = extractLineFeatures(inputNorm).compact;
+  const inputCandidates = generateTransformVariants(inputNorm);
+
+  const scored = dataset.map((item) => {
+    const base = normalizeDataset ? normalizeVector(item.vector) : item.vector;
+    const candidates = generateTransformVariants(base);
+
+    const bestDistance = inputCandidates.reduce((bestInput, inputCandidate) => {
+      const bestForInput = candidates.reduce((bestCandidate, candidate) => {
+        let d = distance(inputCandidate, candidate) / Math.sqrt(inputVector.length);
+        if (centerWeightPower > 0) {
+          const box = boundingBox(candidate);
+          if (box) {
+            const cx = (box.minX + box.maxX) / 2;
+            const cy = (box.minY + box.maxY) / 2;
+            const centerDx = Math.abs(cx - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+            const centerDy = Math.abs(cy - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+            const centerPenalty = Math.pow((centerDx + centerDy) / 2, centerWeightPower);
+            d *= 1 + centerPenalty * 0.2;
+          }
+        }
+        return Math.min(bestCandidate, d);
+      }, Number.POSITIVE_INFINITY);
+      return Math.min(bestInput, bestForInput);
+    }, Number.POSITIVE_INFINITY);
+
+    const candidateFeatures = extractLineFeatures(base).compact;
+    const lineDistance = featureDistance(inputFeatures, candidateFeatures);
+    const blendedDistance = bestDistance * (1 - featureWeight) + lineDistance * featureWeight;
+
+    return {
+      label: item.label,
+      distance: blendedDistance,
+      rawDistance: bestDistance,
+    };
+  });
+
+  const ranked = scored.sort((a, b) => a.distance - b.distance);
+  const vote = voteByInverseDistance(
+    ranked.map((entry) => ({
+      label: entry.label,
+      distance: Math.max(distanceFloor, entry.distance),
+    })),
+    k
+  );
+
+  const nearest = ranked[0] || { label: "unknown", rawDistance: 1 };
+
+  return {
+    label: vote.label,
+    confidence: vote.confidence,
+    nearestLabel: nearest.label,
+    nearestConfidence: Math.round((1 - Math.min(1, nearest.rawDistance)) * 100),
+  };
+}
+
 function extractLineFeatures(vector) {
   const norm = normalizeVector(vector);
   const binary = binarizeVector(norm, 0.25);
@@ -492,6 +574,37 @@ function runAlgorithms(vector, dataset) {
     17
   );
 
+  const model20 = scoreTransformInvariantModel(vector, dataset, {
+    k: 13,
+    distanceFloor: 0.015,
+    featureWeight: 0.25,
+    centerWeightPower: 0,
+  });
+  const model21 = scoreTransformInvariantModel(vector, dataset, {
+    k: 17,
+    distanceFloor: 0.02,
+    featureWeight: 0.35,
+    centerWeightPower: 0,
+  });
+  const model22 = scoreTransformInvariantModel(vector, dataset, {
+    k: 21,
+    distanceFloor: 0.02,
+    featureWeight: 0.3,
+    centerWeightPower: 1,
+  });
+  const model23 = scoreTransformInvariantModel(vector, dataset, {
+    k: 19,
+    distanceFloor: 0.01,
+    featureWeight: 0.4,
+    centerWeightPower: 2,
+  });
+  const model24 = scoreTransformInvariantModel(vector, dataset, {
+    k: 23,
+    distanceFloor: 0.01,
+    featureWeight: 0.45,
+    centerWeightPower: 1,
+  });
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
@@ -524,6 +637,11 @@ function runAlgorithms(vector, dataset) {
     { id: 17, name: "Algorithm 17 (Line Compact kNN-9)", label: lineCompactKnn9.label, confidence: lineCompactKnn9.confidence },
     { id: 18, name: "Algorithm 18 (Model 7 Multi-Scale/Rotation Nearest)", label: model7LikeNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, model7LikeNearest?.distance || 1)) * 100) },
     { id: 19, name: "Algorithm 19 (Model 7 Multi-Transform kNN-17)", label: model7LikeInvariantVote.label, confidence: model7LikeInvariantVote.confidence },
+    { id: 20, name: "Algorithm 20 (v2 Transform Invariant kNN-13)", label: model20.label, confidence: model20.confidence },
+    { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
+    { id: 22, name: "Algorithm 22 (v2 Rotation/Scale Robust kNN-21)", label: model22.label, confidence: model22.confidence },
+    { id: 23, name: "Algorithm 23 (v2 Invariant + Center Stabilized)", label: model23.label, confidence: model23.confidence },
+    { id: 24, name: "Algorithm 24 (v2 Invariant Ensemble kNN-23)", label: model24.label, confidence: model24.confidence },
   ];
 }
 
@@ -575,14 +693,14 @@ function App() {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = "#111827";
-    ctx.lineWidth = 14;
+    ctx.lineWidth = 20;
   }, [showIntro]);
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
     if (!ctx) return;
     ctx.strokeStyle = isErasing ? "#ffffff" : "#111827";
-    ctx.lineWidth = isErasing ? 26 : 14;
+    ctx.lineWidth = isErasing ? 32 : 20;
   }, [isErasing]);
 
   const getPoint = (event) => {
@@ -682,6 +800,7 @@ function App() {
       totalInk,
       activePixels,
       drawnStrokeCount,
+      hasAnyInk: totalInk > 0.03 || activePixels > 0,
       hasMeaningfulDrawing: totalInk > 5 && activePixels > 8 && drawnStrokeCount > 0,
     };
   };
@@ -691,8 +810,16 @@ function App() {
 
     const drawingStats = getDrawingStats();
 
-    if (!drawingStats.hasMeaningfulDrawing) {
+    const needsEarlyGuess = selectedModel === "hyperdraw_v2" || devMode;
+
+    if (!drawingStats.hasAnyInk) {
       setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
+      setConfidence(0);
+      return;
+    }
+
+    if (!drawingStats.hasMeaningfulDrawing && !needsEarlyGuess) {
+      setStatusMessage("Draw a little more for HyperDraw to start guessing.");
       setConfidence(0);
       return;
     }
@@ -707,7 +834,7 @@ function App() {
 
     const results = runAlgorithms(drawingStats.vec, dataset);
     const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === 7) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === 24) || { label: "unknown", confidence: 0 };
     const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
     const conf = Math.max(1, Math.min(99, selected.confidence));
     const lowConfidence = conf < 60;
@@ -748,7 +875,7 @@ function App() {
     const { vec } = drawingStats;
     const results = runAlgorithms(vec, dataset);
     const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === 7) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === 24) || { label: "unknown", confidence: 0 };
 
     setCompareResults({
       hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
@@ -952,7 +1079,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 19 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 24 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
