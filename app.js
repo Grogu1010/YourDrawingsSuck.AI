@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 30;
+const ALGORITHM_COUNT = 31;
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -795,7 +795,7 @@ function extractInvariantShapeDescriptor(vector, size) {
   const cx = m10 / m00;
   const cy = m01 / m00;
   const safeScale = Math.max(1, size - 1);
-  const moments = { 20: 0, 02: 0, 11: 0, 30: 0, 03: 0, 21: 0, 12: 0 };
+  const moments = { "20": 0, "02": 0, "11": 0, "30": 0, "03": 0, "21": 0, "12": 0 };
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
@@ -808,13 +808,13 @@ function extractInvariantShapeDescriptor(vector, size) {
       const bin = Math.min(radialBins.length - 1, Math.floor(radius * radialBins.length));
       radialBins[bin] += 1;
 
-      moments[20] += dx * dx;
-      moments[02] += dy * dy;
-      moments[11] += dx * dy;
-      moments[30] += dx * dx * dx;
-      moments[03] += dy * dy * dy;
-      moments[21] += dx * dx * dy;
-      moments[12] += dx * dy * dy;
+      moments["20"] += dx * dx;
+      moments["02"] += dy * dy;
+      moments["11"] += dx * dy;
+      moments["30"] += dx * dx * dx;
+      moments["03"] += dy * dy * dy;
+      moments["21"] += dx * dx * dy;
+      moments["12"] += dx * dy * dy;
     }
   }
 
@@ -925,6 +925,71 @@ function scoreAlgo30(input16, input32, dataset16, dataset32) {
   return {
     label: ranked[0]?.[0] || "unknown",
     confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+  };
+}
+
+function scoreAlgo31(input16, input32, dataset16, dataset32) {
+  const experts = [
+    {
+      ...scoreAlgo30(input16, input32, dataset16, dataset32),
+      weight: 1.55,
+    },
+    {
+      ...scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+        k: 39,
+        distanceFloor: 0.004,
+        featureWeight: 0.38,
+        centerWeightPower: 1.9,
+      }),
+      weight: 1.35,
+    },
+    {
+      ...scoreAlgo28(input32, dataset32, {
+        k: 37,
+        distanceFloor: 0.006,
+        targetRadius: 9,
+      }),
+      weight: 1.2,
+    },
+    {
+      ...scoreAlgo29(input32, dataset32, {
+        k: 39,
+        distanceFloor: 0.006,
+      }),
+      weight: 1.15,
+    },
+    {
+      ...scoreTransformInvariantModel(input16, dataset16, {
+        k: 27,
+        distanceFloor: 0.01,
+        featureWeight: 0.42,
+        centerWeightPower: 2,
+      }),
+      weight: 1,
+    },
+  ];
+
+  const voteCountByLabel = experts.reduce((acc, expert) => {
+    acc[expert.label] = (acc[expert.label] || 0) + 1;
+    return acc;
+  }, {});
+
+  const labelScores = experts.reduce((acc, expert) => {
+    const confidence = Math.max(0, expert.confidence || 0) / 100;
+    const agreementBoost = 1 + ((voteCountByLabel[expert.label] || 1) - 1) * 0.18;
+    const vote = expert.weight * (0.45 + confidence) * agreementBoost;
+    acc[expert.label] = (acc[expert.label] || 0) + vote;
+    return acc;
+  }, {});
+
+  const ranked = Object.entries(labelScores).sort((a, b) => b[1] - a[1]);
+  const probabilities = softmax(ranked.map(([, score]) => score));
+  const winnerVotes = voteCountByLabel[ranked[0]?.[0]] || 1;
+  const margin = Math.max(0, (probabilities[0] || 0) - (probabilities[1] || 0));
+
+  return {
+    label: ranked[0]?.[0] || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100 + winnerVotes * 2 + margin * 18))),
   };
 }
 
@@ -1288,6 +1353,7 @@ function runAlgorithms(vector, dataset) {
     distanceFloor: 0.008,
   });
   const model30 = scoreAlgo30(vector, input32, dataset, dataset32);
+  const model31 = scoreAlgo31(vector, input32, dataset, dataset32);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -1332,6 +1398,7 @@ function runAlgorithms(vector, dataset) {
     { id: 28, name: "Algorithm 28 (Moment Canonical + Edge-Chamfer + HOG-lite kNN)", label: model28.label, confidence: model28.confidence },
     { id: 29, name: "Algorithm 29 (Invariant Moments + Radial Shape Signature)", label: model29.label, confidence: model29.confidence },
     { id: 30, name: "Algorithm 30 (Champion Ensemble: Invariant + Chamfer + Moments)", label: model30.label, confidence: model30.confidence },
+    { id: 31, name: "Algorithm 31 (Omega Fusion: Champion + Invariant Consensus)", label: model31.label, confidence: model31.confidence },
   ];
 }
 
@@ -1736,7 +1803,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 30 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 31 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
