@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 31;
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -83,7 +83,7 @@ function saveDataset(dataset) {
 }
 
 function createDefaultAlgorithmStats() {
-  return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({ id: index + 1, attempts: 0, correct: 0 }));
+  return ACTIVE_ALGORITHM_IDS.map((id) => ({ id, attempts: 0, correct: 0 }));
 }
 
 function loadAlgorithmStats() {
@@ -1168,24 +1168,15 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
 
 function runAlgorithms(vector, dataset) {
   if (!dataset.length) {
-    return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({
-      id: index + 1,
-      name: `Algorithm ${index + 1}`,
-      label: "Need training data first",
-      confidence: 0,
-    }));
+    return [
+      { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
+      { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
+      { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: "Need training data first", confidence: 0 },
+    ];
   }
 
   const normalizedInput = normalizeVector(vector);
-  const prototypesRaw = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: item.vector })));
   const prototypesNormalized = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: normalizeVector(item.vector) })));
-
-  const rawDistances = dataset
-    .map((item) => ({
-      label: item.label,
-      distance: distance(vector, item.vector) / Math.sqrt(vector.length),
-    }))
-    .sort((a, b) => a.distance - b.distance);
 
   const normalizedDistances = dataset
     .map((item) => ({
@@ -1211,223 +1202,21 @@ function runAlgorithms(vector, dataset) {
   const algo1Guess = algo1Ranked[0]?.[0] || "unknown";
   const algo1Confidence = Math.round((algo1Probs[0] || 0) * 100);
 
-  const nearestRaw = rawDistances[0];
-  const nearestNorm = normalizedDistances[0];
-  const knn5Raw = voteByInverseDistance(rawDistances, 5);
-  const knn11Norm = voteByInverseDistance(normalizedDistances, 11);
-
-  const prototypeRaw = Object.entries(prototypesRaw)
-    .map(([label, proto]) => ({ label, distance: distance(vector, proto) / Math.sqrt(vector.length) }))
-    .sort((a, b) => a.distance - b.distance)[0];
-
   const prototypeNorm = Object.entries(prototypesNormalized)
     .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
     .sort((a, b) => a.distance - b.distance)[0];
 
-  const centerWeighted = dataset
-    .map((item) => ({
-      label: item.label,
-      distance:
-        weightedDistance(normalizedInput, normalizeVector(item.vector), (index) => {
-          const x = index % GRID_SIZE;
-          const y = Math.floor(index / GRID_SIZE);
-          const dx = Math.abs(x - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
-          const dy = Math.abs(y - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
-          return 1.4 - Math.min(1, (dx + dy) / 2) * 0.6;
-        }) / Math.sqrt(vector.length),
-    }))
-    .sort((a, b) => a.distance - b.distance)[0];
-
-  const binaryInput = binarizeVector(normalizedInput);
-  const binaryNearest = dataset
-    .map((item) => ({
-      label: item.label,
-      distance: distance(binaryInput, binarizeVector(normalizeVector(item.vector))) / Math.sqrt(vector.length),
-    }))
-    .sort((a, b) => a.distance - b.distance)[0];
-
-  const edgeWeighted = dataset
-    .map((item) => ({
-      label: item.label,
-      distance:
-        weightedDistance(normalizedInput, normalizeVector(item.vector), (index) => {
-          const x = index % GRID_SIZE;
-          const y = Math.floor(index / GRID_SIZE);
-          const dx = Math.abs(x - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
-          const dy = Math.abs(y - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
-          return 0.8 + Math.min(1, (dx + dy) / 2) * 0.9;
-        }) / Math.sqrt(vector.length),
-    }))
-    .sort((a, b) => a.distance - b.distance)[0];
-
-  const knn21Norm = voteByInverseDistance(normalizedDistances, 21);
-
-  const prototypeBlendScores = Object.entries(prototypesNormalized).map(([label, prototype]) => {
-    const normalizedPrototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
-    const nearestSupport = normalizedDistances.filter((item) => item.label === label).slice(0, 3);
-    const nearestSupportDistance =
-      nearestSupport.length > 0
-        ? nearestSupport.reduce((sum, item) => sum + item.distance, 0) / nearestSupport.length
-        : 1;
-
-    return {
-      label,
-      score: 1 / Math.max(0.001, normalizedPrototypeDistance * 0.7 + nearestSupportDistance * 0.3 + 0.02),
-    };
-  });
-
-  const prototypeBlendRanked = prototypeBlendScores.sort((a, b) => b.score - a.score);
-  const prototypeBlendProbabilities = softmax(prototypeBlendRanked.map((item) => item.score));
-  const prototypeBlendTop = prototypeBlendRanked[0];
-
-  const inputLineFeatures = extractLineFeatures(vector);
-
-  const lineShapeKnn7 = voteFeatureKnn(inputLineFeatures.full, dataset, (features) => features.full, 7);
-  const lineShapeKnn15 = voteFeatureKnn(inputLineFeatures.full, dataset, (features) => features.full, 15);
-  const lineProfileKnn11 = voteFeatureKnn(inputLineFeatures.profileOnly, dataset, (features) => features.profileOnly, 11);
-  const lineCompactKnn9 = voteFeatureKnn(inputLineFeatures.compact, dataset, (features) => features.compact, 9);
-
-  const model7LikeInputCandidates = [vector, normalizedInput, ...generateRotations(normalizedInput)];
-  const model7LikeDataset = dataset.map((item) => {
-    const normalized = normalizeVector(item.vector);
-    const rotations = generateRotations(normalized);
-    const prototypes = [item.vector, normalized, ...rotations];
-    const bestDistance = prototypes.reduce((best, candidate) => {
-      const candidateDistance = distance(normalizedInput, candidate) / Math.sqrt(vector.length);
-      return Math.min(best, candidateDistance);
-    }, Number.POSITIVE_INFINITY);
-
-    const bestAlignedDistance = model7LikeInputCandidates.reduce((bestInput, inputCandidate) => {
-      const candidateDistance = prototypes.reduce((bestProto, candidate) => {
-        const d = distance(inputCandidate, candidate) / Math.sqrt(vector.length);
-        return Math.min(bestProto, d);
-      }, Number.POSITIVE_INFINITY);
-      return Math.min(bestInput, candidateDistance);
-    }, Number.POSITIVE_INFINITY);
-
-    return {
-      label: item.label,
-      distance: bestDistance,
-      alignedDistance: bestAlignedDistance,
-    };
-  });
-
-  const model7LikeNearest = [...model7LikeDataset].sort((a, b) => a.distance - b.distance)[0];
-  const model7LikeInvariantVote = voteByInverseDistance(
-    model7LikeDataset
-      .map((item) => ({ label: item.label, distance: item.alignedDistance }))
-      .sort((a, b) => a.distance - b.distance),
-    17
-  );
-
-  const model20 = scoreTransformInvariantModel(vector, dataset, {
-    k: 13,
-    distanceFloor: 0.015,
-    featureWeight: 0.25,
-    centerWeightPower: 0,
-  });
   const model21 = scoreTransformInvariantModel(vector, dataset, {
     k: 17,
     distanceFloor: 0.02,
     featureWeight: 0.35,
     centerWeightPower: 0,
   });
-  const model22 = scoreTransformInvariantModel(vector, dataset, {
-    k: 21,
-    distanceFloor: 0.02,
-    featureWeight: 0.3,
-    centerWeightPower: 1,
-  });
-  const model23 = scoreTransformInvariantModel(vector, dataset, {
-    k: 19,
-    distanceFloor: 0.01,
-    featureWeight: 0.4,
-    centerWeightPower: 2,
-  });
-  const model24 = scoreTransformInvariantModel(vector, dataset, {
-    k: 23,
-    distanceFloor: 0.01,
-    featureWeight: 0.45,
-    centerWeightPower: 1,
-  });
-
-  const input32 = resizeVector(vector, GRID_SIZE, GRID_SIZE_V3);
-  const dataset32 = dataset.map((item) => ({ ...item, vector: resizeVector(item.vector, GRID_SIZE, GRID_SIZE_V3) }));
-
-  const model25 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
-    k: 17,
-    distanceFloor: 0.02,
-    featureWeight: 0.35,
-    centerWeightPower: 0,
-  });
-  const model26 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
-    k: 21,
-    distanceFloor: 0.015,
-    featureWeight: 0.4,
-    centerWeightPower: 1,
-  });
-  const model27 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
-    k: 25,
-    distanceFloor: 0.01,
-    featureWeight: 0.45,
-    centerWeightPower: 0,
-  });
-  const model28 = scoreAlgo28(input32, dataset32, {
-    k: 21,
-    distanceFloor: 0.01,
-    targetRadius: 9,
-  });
-  const model29 = scoreAlgo29(input32, dataset32, {
-    k: 27,
-    distanceFloor: 0.008,
-  });
-  const model30 = scoreAlgo30(vector, input32, dataset, dataset32);
-  const model31 = scoreAlgo31(vector, input32, dataset, dataset32);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
-    { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
-    { id: 3, name: "Algorithm 3 (Nearest Normalized)", label: nearestNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestNorm?.distance || 1)) * 100) },
-    { id: 4, name: "Algorithm 4 (kNN-5 Raw)", label: knn5Raw.label, confidence: knn5Raw.confidence },
-    { id: 5, name: "Algorithm 5 (kNN-11 Normalized)", label: knn11Norm.label, confidence: knn11Norm.confidence },
-    { id: 6, name: "Algorithm 6 (Prototype Raw)", label: prototypeRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeRaw?.distance || 1)) * 100) },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
-    { id: 8, name: "Algorithm 8 (Center Weighted)", label: centerWeighted?.label || "unknown", confidence: Math.round((1 - Math.min(1, centerWeighted?.distance || 1)) * 100) },
-    { id: 9, name: "Algorithm 9 (Binary Shape)", label: binaryNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, binaryNearest?.distance || 1)) * 100) },
-    { id: 10, name: "Algorithm 10 (Edge Weighted)", label: edgeWeighted?.label || "unknown", confidence: Math.round((1 - Math.min(1, edgeWeighted?.distance || 1)) * 100) },
-    { id: 11, name: "Algorithm 11 (kNN-21 Normalized)", label: knn21Norm.label, confidence: knn21Norm.confidence },
-    {
-      id: 12,
-      name: "Algorithm 12 (Prototype Blend)",
-      label: prototypeBlendTop?.label || "unknown",
-      confidence: Math.round((prototypeBlendProbabilities[0] || 0) * 100),
-    },
-    {
-      id: 13,
-      name: "Algorithm 13 (Raw+Norm Hybrid)",
-      label: nearestNorm?.distance <= (nearestRaw?.distance ?? 1) ? nearestNorm?.label || "unknown" : nearestRaw?.label || "unknown",
-      confidence: Math.round(
-        (1 - Math.min(1, Math.min(nearestNorm?.distance ?? 1, nearestRaw?.distance ?? 1))) * 100
-      ),
-    },
-    { id: 14, name: "Algorithm 14 (Line Shape kNN-7)", label: lineShapeKnn7.label, confidence: lineShapeKnn7.confidence },
-    { id: 15, name: "Algorithm 15 (Line Shape kNN-15)", label: lineShapeKnn15.label, confidence: lineShapeKnn15.confidence },
-    { id: 16, name: "Algorithm 16 (Line Profile kNN-11)", label: lineProfileKnn11.label, confidence: lineProfileKnn11.confidence },
-    { id: 17, name: "Algorithm 17 (Line Compact kNN-9)", label: lineCompactKnn9.label, confidence: lineCompactKnn9.confidence },
-    { id: 18, name: "Algorithm 18 (Model 7 Multi-Scale/Rotation Nearest)", label: model7LikeNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, model7LikeNearest?.distance || 1)) * 100) },
-    { id: 19, name: "Algorithm 19 (Model 7 Multi-Transform kNN-17)", label: model7LikeInvariantVote.label, confidence: model7LikeInvariantVote.confidence },
-    { id: 20, name: "Algorithm 20 (v2 Transform Invariant kNN-13)", label: model20.label, confidence: model20.confidence },
     { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
-    { id: 22, name: "Algorithm 22 (v2 Rotation/Scale Robust kNN-21)", label: model22.label, confidence: model22.confidence },
-    { id: 23, name: "Algorithm 23 (v2 Invariant + Center Stabilized)", label: model23.label, confidence: model23.confidence },
-    { id: 24, name: "Algorithm 24 (v2 Invariant Ensemble kNN-23)", label: model24.label, confidence: model24.confidence },
-    { id: 25, name: "Algorithm 25 (v3 32x32 Model 21 Baseline)", label: model25.label, confidence: model25.confidence },
-    { id: 26, name: "Algorithm 26 (v3 32x32 Rotation/Scale+Center)", label: model26.label, confidence: model26.confidence },
-    { id: 27, name: "Algorithm 27 (v3 32x32 Detail Ensemble)", label: model27.label, confidence: model27.confidence },
-    { id: 28, name: "Algorithm 28 (Moment Canonical + Edge-Chamfer + HOG-lite kNN)", label: model28.label, confidence: model28.confidence },
-    { id: 29, name: "Algorithm 29 (Invariant Moments + Radial Shape Signature)", label: model29.label, confidence: model29.confidence },
-    { id: 30, name: "Algorithm 30 (Champion Ensemble: Invariant + Chamfer + Moments)", label: model30.label, confidence: model30.confidence },
-    { id: 31, name: "Algorithm 31 (Omega Fusion: Champion + Invariant Consensus)", label: model31.label, confidence: model31.confidence },
   ];
 }
 
@@ -1833,7 +1622,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 31 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, and 21.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
