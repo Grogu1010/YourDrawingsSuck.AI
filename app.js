@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 29;
+const ALGORITHM_COUNT = 30;
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -876,6 +876,58 @@ function scoreAlgo29(input, dataset32, options = {}) {
   );
 }
 
+function scoreAlgo30(input16, input32, dataset16, dataset32) {
+  const candidates = [
+    {
+      ...scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+        k: 35,
+        distanceFloor: 0.005,
+        featureWeight: 0.34,
+        centerWeightPower: 1.5,
+      }),
+      weight: 1.35,
+    },
+    {
+      ...scoreAlgo28(input32, dataset32, {
+        k: 33,
+        distanceFloor: 0.007,
+        targetRadius: 9,
+      }),
+      weight: 1.2,
+    },
+    {
+      ...scoreAlgo29(input32, dataset32, {
+        k: 35,
+        distanceFloor: 0.007,
+      }),
+      weight: 1.15,
+    },
+    {
+      ...scoreTransformInvariantModelForSize(input16, dataset16, GRID_SIZE, {
+        k: 29,
+        distanceFloor: 0.01,
+        featureWeight: 0.36,
+        centerWeightPower: 1.1,
+      }),
+      weight: 1,
+    },
+  ];
+
+  const labelScores = candidates.reduce((acc, model) => {
+    const confidenceWeight = 0.3 + (Math.max(0, model.confidence || 0) / 100);
+    const vote = model.weight * confidenceWeight;
+    acc[model.label] = (acc[model.label] || 0) + vote;
+    return acc;
+  }, {});
+
+  const ranked = Object.entries(labelScores).sort((a, b) => b[1] - a[1]);
+  const probabilities = softmax(ranked.map(([, score]) => score));
+  return {
+    label: ranked[0]?.[0] || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+  };
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -1235,6 +1287,7 @@ function runAlgorithms(vector, dataset) {
     k: 27,
     distanceFloor: 0.008,
   });
+  const model30 = scoreAlgo30(vector, input32, dataset, dataset32);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -1278,6 +1331,7 @@ function runAlgorithms(vector, dataset) {
     { id: 27, name: "Algorithm 27 (v3 32x32 Detail Ensemble)", label: model27.label, confidence: model27.confidence },
     { id: 28, name: "Algorithm 28 (Moment Canonical + Edge-Chamfer + HOG-lite kNN)", label: model28.label, confidence: model28.confidence },
     { id: 29, name: "Algorithm 29 (Invariant Moments + Radial Shape Signature)", label: model29.label, confidence: model29.confidence },
+    { id: 30, name: "Algorithm 30 (Champion Ensemble: Invariant + Chamfer + Moments)", label: model30.label, confidence: model30.confidence },
   ];
 }
 
@@ -1682,7 +1736,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 29 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 30 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
