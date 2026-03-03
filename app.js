@@ -11,7 +11,7 @@ const OBJECTS = [
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 13;
+const ALGORITHM_COUNT = 19;
 
 function randomPrompt() {
   return OBJECTS[Math.floor(Math.random() * OBJECTS.length)];
@@ -178,6 +178,90 @@ function binarizeVector(vector, threshold = 0.2) {
   return vector.map((value) => (value >= threshold ? 1 : 0));
 }
 
+function rotateVector90(vector) {
+  const output = new Array(vector.length).fill(0);
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      output[x * GRID_SIZE + (GRID_SIZE - 1 - y)] = vector[y * GRID_SIZE + x];
+    }
+  }
+  return output;
+}
+
+function generateRotations(vector) {
+  const rot0 = vector;
+  const rot90 = rotateVector90(rot0);
+  const rot180 = rotateVector90(rot90);
+  const rot270 = rotateVector90(rot180);
+  return [rot0, rot90, rot180, rot270];
+}
+
+function extractLineFeatures(vector) {
+  const norm = normalizeVector(vector);
+  const binary = binarizeVector(norm, 0.25);
+  const rowSums = new Array(GRID_SIZE).fill(0);
+  const colSums = new Array(GRID_SIZE).fill(0);
+  let hTransitions = 0;
+  let vTransitions = 0;
+  let d1Transitions = 0;
+  let d2Transitions = 0;
+  let active = 0;
+  let cx = 0;
+  let cy = 0;
+
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const index = y * GRID_SIZE + x;
+      const value = binary[index];
+      rowSums[y] += value;
+      colSums[x] += value;
+      active += value;
+      cx += value * x;
+      cy += value * y;
+
+      if (x < GRID_SIZE - 1 && value !== binary[index + 1]) hTransitions += 1;
+      if (y < GRID_SIZE - 1 && value !== binary[index + GRID_SIZE]) vTransitions += 1;
+      if (x < GRID_SIZE - 1 && y < GRID_SIZE - 1 && value !== binary[index + GRID_SIZE + 1]) d1Transitions += 1;
+      if (x > 0 && y < GRID_SIZE - 1 && value !== binary[index + GRID_SIZE - 1]) d2Transitions += 1;
+    }
+  }
+
+  const safeActive = Math.max(active, 1);
+  const centerX = cx / safeActive / GRID_SIZE;
+  const centerY = cy / safeActive / GRID_SIZE;
+
+  const transitions = [hTransitions, vTransitions, d1Transitions, d2Transitions].map((v) => v / (GRID_SIZE * GRID_SIZE));
+  const rowProfile = rowSums.map((value) => value / GRID_SIZE);
+  const colProfile = colSums.map((value) => value / GRID_SIZE);
+
+  return {
+    binary,
+    full: [...transitions, active / (GRID_SIZE * GRID_SIZE), centerX, centerY, ...rowProfile, ...colProfile],
+    compact: [...transitions, active / (GRID_SIZE * GRID_SIZE), centerX, centerY],
+    profileOnly: [...rowProfile, ...colProfile],
+  };
+}
+
+function featureDistance(a, b) {
+  let total = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    total += d * d;
+  }
+  return Math.sqrt(total / Math.max(1, a.length));
+}
+
+function voteFeatureKnn(featureInput, dataset, featureSelector, k) {
+  const scored = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: featureDistance(featureInput, featureSelector(extractLineFeatures(item.vector))),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  return voteByInverseDistance(scored, k);
+}
+
 function voteByInverseDistance(scoredExamples, k) {
   const topK = scoredExamples.slice(0, Math.min(k, scoredExamples.length));
   const labelScores = topK.reduce((acc, item) => {
@@ -307,6 +391,46 @@ function runAlgorithms(vector, dataset) {
   const prototypeBlendProbabilities = softmax(prototypeBlendRanked.map((item) => item.score));
   const prototypeBlendTop = prototypeBlendRanked[0];
 
+  const inputLineFeatures = extractLineFeatures(vector);
+
+  const lineShapeKnn7 = voteFeatureKnn(inputLineFeatures.full, dataset, (features) => features.full, 7);
+  const lineShapeKnn15 = voteFeatureKnn(inputLineFeatures.full, dataset, (features) => features.full, 15);
+  const lineProfileKnn11 = voteFeatureKnn(inputLineFeatures.profileOnly, dataset, (features) => features.profileOnly, 11);
+  const lineCompactKnn9 = voteFeatureKnn(inputLineFeatures.compact, dataset, (features) => features.compact, 9);
+
+  const model7LikeInputCandidates = [vector, normalizedInput, ...generateRotations(normalizedInput)];
+  const model7LikeDataset = dataset.map((item) => {
+    const normalized = normalizeVector(item.vector);
+    const rotations = generateRotations(normalized);
+    const prototypes = [item.vector, normalized, ...rotations];
+    const bestDistance = prototypes.reduce((best, candidate) => {
+      const candidateDistance = distance(normalizedInput, candidate) / Math.sqrt(vector.length);
+      return Math.min(best, candidateDistance);
+    }, Number.POSITIVE_INFINITY);
+
+    const bestAlignedDistance = model7LikeInputCandidates.reduce((bestInput, inputCandidate) => {
+      const candidateDistance = prototypes.reduce((bestProto, candidate) => {
+        const d = distance(inputCandidate, candidate) / Math.sqrt(vector.length);
+        return Math.min(bestProto, d);
+      }, Number.POSITIVE_INFINITY);
+      return Math.min(bestInput, candidateDistance);
+    }, Number.POSITIVE_INFINITY);
+
+    return {
+      label: item.label,
+      distance: bestDistance,
+      alignedDistance: bestAlignedDistance,
+    };
+  });
+
+  const model7LikeNearest = [...model7LikeDataset].sort((a, b) => a.distance - b.distance)[0];
+  const model7LikeInvariantVote = voteByInverseDistance(
+    model7LikeDataset
+      .map((item) => ({ label: item.label, distance: item.alignedDistance }))
+      .sort((a, b) => a.distance - b.distance),
+    17
+  );
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
@@ -333,6 +457,12 @@ function runAlgorithms(vector, dataset) {
         (1 - Math.min(1, Math.min(nearestNorm?.distance ?? 1, nearestRaw?.distance ?? 1))) * 100
       ),
     },
+    { id: 14, name: "Algorithm 14 (Line Shape kNN-7)", label: lineShapeKnn7.label, confidence: lineShapeKnn7.confidence },
+    { id: 15, name: "Algorithm 15 (Line Shape kNN-15)", label: lineShapeKnn15.label, confidence: lineShapeKnn15.confidence },
+    { id: 16, name: "Algorithm 16 (Line Profile kNN-11)", label: lineProfileKnn11.label, confidence: lineProfileKnn11.confidence },
+    { id: 17, name: "Algorithm 17 (Line Compact kNN-9)", label: lineCompactKnn9.label, confidence: lineCompactKnn9.confidence },
+    { id: 18, name: "Algorithm 18 (Model 7 Multi-Scale/Rotation Nearest)", label: model7LikeNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, model7LikeNearest?.distance || 1)) * 100) },
+    { id: 19, name: "Algorithm 19 (Model 7 Multi-Transform kNN-17)", label: model7LikeInvariantVote.label, confidence: model7LikeInvariantVote.confidence },
   ];
 }
 
@@ -607,7 +737,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 13 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 19 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
