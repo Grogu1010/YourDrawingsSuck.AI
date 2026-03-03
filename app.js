@@ -14,6 +14,8 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 const ALGORITHM_COUNT = 24;
+const HYPERDRAW_ALGORITHM_ID = 1;
+const HYPERDRAW_V2_ALGORITHM_ID = 19;
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -839,8 +841,8 @@ function App() {
     }
 
     const results = runAlgorithms(drawingStats.vec, dataset);
-    const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === 24) || { label: "unknown", confidence: 0 };
+    const hyperDraw = results.find((entry) => entry.id === HYPERDRAW_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === HYPERDRAW_V2_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
     const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
     const conf = Math.max(1, Math.min(99, selected.confidence));
     const lowConfidence = conf < 60;
@@ -898,8 +900,8 @@ function App() {
 
     const { vec } = drawingStats;
     const results = runAlgorithms(vec, dataset);
-    const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
-    const hyperDrawV2 = results.find((entry) => entry.id === 24) || { label: "unknown", confidence: 0 };
+    const hyperDraw = results.find((entry) => entry.id === HYPERDRAW_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === HYPERDRAW_V2_ALGORITHM_ID) || { label: "unknown", confidence: 0 };
 
     setCompareResults({
       hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
