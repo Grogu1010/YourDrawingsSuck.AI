@@ -13,9 +13,10 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 24;
+const ALGORITHM_COUNT = 27;
 const HYPERDRAW_ALGORITHM_ID = 1;
-const HYPERDRAW_V2_ALGORITHM_ID = 19;
+const HYPERDRAW_V2_ALGORITHM_ID = 7;
+const GRID_SIZE_V3 = 32;
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -422,6 +423,193 @@ function voteByInverseDistance(scoredExamples, k) {
   return { label, confidence };
 }
 
+function resizeVector(vector, fromSize, toSize) {
+  if (fromSize === toSize) return [...vector];
+
+  const output = new Array(toSize * toSize).fill(0);
+  for (let y = 0; y < toSize; y += 1) {
+    const sourceY = Math.min(fromSize - 1, Math.floor((y / Math.max(1, toSize - 1)) * (fromSize - 1)));
+    for (let x = 0; x < toSize; x += 1) {
+      const sourceX = Math.min(fromSize - 1, Math.floor((x / Math.max(1, toSize - 1)) * (fromSize - 1)));
+      output[y * toSize + x] = vector[sourceY * fromSize + sourceX] || 0;
+    }
+  }
+  return output;
+}
+
+function boundingBoxForSize(vector, size) {
+  let minX = size;
+  let maxX = -1;
+  let minY = size;
+  let maxY = -1;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = vector[y * size + x];
+      if (value <= 0.05) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+  return { minX, maxX, minY, maxY };
+}
+
+function normalizeVectorForSize(vector, size) {
+  const box = boundingBoxForSize(vector, size);
+  if (!box) return vector;
+
+  const width = box.maxX - box.minX + 1;
+  const height = box.maxY - box.minY + 1;
+  const scale = Math.max(width, height);
+  const output = new Array(size * size).fill(0);
+  const offsetX = Math.floor((size - scale) / 2);
+  const offsetY = Math.floor((size - scale) / 2);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const sourceX = box.minX + ((x - offsetX) / scale) * width;
+      const sourceY = box.minY + ((y - offsetY) / scale) * height;
+      const ix = Math.floor(sourceX);
+      const iy = Math.floor(sourceY);
+      if (ix < box.minX || ix > box.maxX || iy < box.minY || iy > box.maxY) continue;
+      const value = vector[iy * size + ix];
+      output[y * size + x] = value > 0.05 ? value : 0;
+    }
+  }
+
+  return output;
+}
+
+function rotateVector90ForSize(vector, size) {
+  const output = new Array(vector.length).fill(0);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      output[x * size + (size - 1 - y)] = vector[y * size + x];
+    }
+  }
+  return output;
+}
+
+function generateTransformVariantsForSize(vector, size) {
+  const rot0 = vector;
+  const rot90 = rotateVector90ForSize(rot0, size);
+  const rot180 = rotateVector90ForSize(rot90, size);
+  const rot270 = rotateVector90ForSize(rot180, size);
+  const flipped = new Array(vector.length).fill(0);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      flipped[y * size + (size - 1 - x)] = vector[y * size + x];
+    }
+  }
+
+  const flipped90 = rotateVector90ForSize(flipped, size);
+  const flipped180 = rotateVector90ForSize(flipped90, size);
+  const flipped270 = rotateVector90ForSize(flipped180, size);
+
+  return [rot0, rot90, rot180, rot270, flipped, flipped90, flipped180, flipped270];
+}
+
+function extractLineFeaturesForSize(vector, size) {
+  const norm = normalizeVectorForSize(vector, size);
+  const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
+  const rowSums = new Array(size).fill(0);
+  const colSums = new Array(size).fill(0);
+  let hTransitions = 0;
+  let vTransitions = 0;
+  let d1Transitions = 0;
+  let d2Transitions = 0;
+  let active = 0;
+  let cx = 0;
+  let cy = 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const index = y * size + x;
+      const value = binary[index];
+      rowSums[y] += value;
+      colSums[x] += value;
+      active += value;
+      cx += value * x;
+      cy += value * y;
+
+      if (x < size - 1 && value !== binary[index + 1]) hTransitions += 1;
+      if (y < size - 1 && value !== binary[index + size]) vTransitions += 1;
+      if (x < size - 1 && y < size - 1 && value !== binary[index + size + 1]) d1Transitions += 1;
+      if (x > 0 && y < size - 1 && value !== binary[index + size - 1]) d2Transitions += 1;
+    }
+  }
+
+  const safeActive = Math.max(active, 1);
+  return [
+    hTransitions / (size * size),
+    vTransitions / (size * size),
+    d1Transitions / (size * size),
+    d2Transitions / (size * size),
+    active / (size * size),
+    cx / safeActive / size,
+    cy / safeActive / size,
+  ];
+}
+
+function scoreTransformInvariantModelForSize(inputVector, dataset, size, options = {}) {
+  const { k = 17, distanceFloor = 0.02, featureWeight = 0.35, centerWeightPower = 0 } = options;
+  const inputNorm = normalizeVectorForSize(inputVector, size);
+  const inputFeatures = extractLineFeaturesForSize(inputNorm, size);
+  const inputCandidates = generateTransformVariantsForSize(inputNorm, size);
+
+  const scored = dataset.map((item) => {
+    const base = normalizeVectorForSize(item.vector, size);
+    const candidates = generateTransformVariantsForSize(base, size);
+
+    const bestDistance = inputCandidates.reduce((bestInput, inputCandidate) => {
+      const bestForInput = candidates.reduce((bestCandidate, candidate) => {
+        let d = distance(inputCandidate, candidate) / Math.sqrt(size * size);
+        if (centerWeightPower > 0) {
+          const box = boundingBoxForSize(candidate, size);
+          if (box) {
+            const cx = (box.minX + box.maxX) / 2;
+            const cy = (box.minY + box.maxY) / 2;
+            const centerDx = Math.abs(cx - (size - 1) / 2) / (size / 2);
+            const centerDy = Math.abs(cy - (size - 1) / 2) / (size / 2);
+            d *= 1 + Math.pow((centerDx + centerDy) / 2, centerWeightPower) * 0.2;
+          }
+        }
+        return Math.min(bestCandidate, d);
+      }, Number.POSITIVE_INFINITY);
+      return Math.min(bestInput, bestForInput);
+    }, Number.POSITIVE_INFINITY);
+
+    const lineDistance = featureDistance(inputFeatures, extractLineFeaturesForSize(base, size));
+    return {
+      label: item.label,
+      distance: bestDistance * (1 - featureWeight) + lineDistance * featureWeight,
+      rawDistance: bestDistance,
+    };
+  });
+
+  const ranked = scored.sort((a, b) => a.distance - b.distance);
+  const vote = voteByInverseDistance(
+    ranked.map((entry) => ({
+      label: entry.label,
+      distance: Math.max(distanceFloor, entry.distance),
+    })),
+    k
+  );
+  const nearest = ranked[0] || { label: "unknown", rawDistance: 1 };
+
+  return {
+    label: vote.label,
+    confidence: vote.confidence,
+    nearestLabel: nearest.label,
+    nearestConfidence: Math.round((1 - Math.min(1, nearest.rawDistance)) * 100),
+  };
+}
+
 function runAlgorithms(vector, dataset) {
   if (!dataset.length) {
     return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({
@@ -607,6 +795,28 @@ function runAlgorithms(vector, dataset) {
     centerWeightPower: 1,
   });
 
+  const input32 = resizeVector(vector, GRID_SIZE, GRID_SIZE_V3);
+  const dataset32 = dataset.map((item) => ({ ...item, vector: resizeVector(item.vector, GRID_SIZE, GRID_SIZE_V3) }));
+
+  const model25 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+    k: 17,
+    distanceFloor: 0.02,
+    featureWeight: 0.35,
+    centerWeightPower: 0,
+  });
+  const model26 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+    k: 21,
+    distanceFloor: 0.015,
+    featureWeight: 0.4,
+    centerWeightPower: 1,
+  });
+  const model27 = scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+    k: 25,
+    distanceFloor: 0.01,
+    featureWeight: 0.45,
+    centerWeightPower: 0,
+  });
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
@@ -644,6 +854,9 @@ function runAlgorithms(vector, dataset) {
     { id: 22, name: "Algorithm 22 (v2 Rotation/Scale Robust kNN-21)", label: model22.label, confidence: model22.confidence },
     { id: 23, name: "Algorithm 23 (v2 Invariant + Center Stabilized)", label: model23.label, confidence: model23.confidence },
     { id: 24, name: "Algorithm 24 (v2 Invariant Ensemble kNN-23)", label: model24.label, confidence: model24.confidence },
+    { id: 25, name: "Algorithm 25 (v3 32x32 Model 21 Baseline)", label: model25.label, confidence: model25.confidence },
+    { id: 26, name: "Algorithm 26 (v3 32x32 Rotation/Scale+Center)", label: model26.label, confidence: model26.confidence },
+    { id: 27, name: "Algorithm 27 (v3 32x32 Detail Ensemble)", label: model27.label, confidence: model27.confidence },
   ];
 }
 
@@ -1105,7 +1318,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 24 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 27 algorithms.</p>
               <div className="algo-grid">
                 {[...algorithmStats]
                   .sort((a, b) => {
