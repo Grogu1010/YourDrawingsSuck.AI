@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1173,6 +1173,7 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: "Need training data first", confidence: 0 },
       { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: "Need training data first", confidence: 0 },
+      { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1229,11 +1230,34 @@ function runAlgorithms(vector, dataset) {
     centerWeightPower: 0,
   });
 
+  const model33LineRanked = Object.entries(prototypesNormalized)
+    .map(([label, proto]) => {
+      const lineDistance = featureDistance(normalizedInputFeatures, extractLineFeaturesForSize(proto, GRID_SIZE));
+      return {
+        label,
+        score: lineDistance,
+      };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const model33LineBest = model33LineRanked[0] || { label: "unknown", score: 1 };
+  const model33LineConfidence = Math.round((1 - Math.min(1, model33LineBest.score)) * 100);
+  const model33Agree = model21.label === model33LineBest.label;
+  const model33Label = model33Agree || model21.confidence >= 55 ? model21.label : model33LineBest.label;
+  const model33Confidence = Math.max(
+    1,
+    Math.min(
+      99,
+      Math.round(model21.confidence * 0.72 + model33LineConfidence * 0.28 + (model33Agree ? 6 : -4))
+    )
+  );
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
     { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: model32Best.label, confidence: model32Confidence },
+    { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: model33Label, confidence: model33Confidence },
   ];
 }
 
@@ -1265,6 +1289,8 @@ function App() {
   const [devMode, setDevMode] = useState(false);
   const [activeTab, setActiveTab] = useState("draw");
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
+  const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
+  const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
@@ -1515,6 +1541,17 @@ function App() {
         };
       })
     );
+    setSessionAlgorithmStats((previous) =>
+      previous.map((algo) => {
+        const result = results.find((entry) => entry.id === algo.id);
+        const gotItRight = result?.label === prompt;
+        return {
+          ...algo,
+          attempts: algo.attempts + 1,
+          correct: algo.correct + (gotItRight ? 1 : 0),
+        };
+      })
+    );
 
     setCompareStats((previous) => {
       const next = { ...previous, attempts: previous.attempts + 1 };
@@ -1639,9 +1676,28 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, and 32.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, and 33.</p>
+              <div className="row">
+                <button
+                  className={`secondary ${devStatsView === "session" ? "active" : ""}`}
+                  onClick={() => setDevStatsView("session")}
+                >
+                  Session checks
+                </button>
+                <button
+                  className={`secondary ${devStatsView === "lifetime" ? "active" : ""}`}
+                  onClick={() => setDevStatsView("lifetime")}
+                >
+                  Lifetime checks
+                </button>
+              </div>
+              <p>
+                {devStatsView === "session"
+                  ? "Session checks reset on reload."
+                  : "Lifetime checks are saved in your browser."}
+              </p>
               <div className="algo-grid">
-                {[...algorithmStats]
+                {[...(devStatsView === "session" ? sessionAlgorithmStats : algorithmStats)]
                   .sort((a, b) => {
                     const aAccuracy = a.attempts ? a.correct / a.attempts : -1;
                     const bAccuracy = b.attempts ? b.correct / b.attempts : -1;
@@ -1650,17 +1706,19 @@ function App() {
                     return a.id - b.id;
                   })
                   .map((algo) => {
-                  const latest = lastDoneResults.find((entry) => entry.id === algo.id);
-                  const accuracy = algo.attempts ? Math.round((algo.correct / algo.attempts) * 100) : 0;
-                  return (
-                    <div className="stat" key={algo.id}>
-                      <div><strong>Algorithm {algo.id}</strong>{algo.id === 1 ? " (live model)" : ""}</div>
-                      <div>Guess: {latest?.label || "-"}</div>
-                      <div>Guess confidence: {latest?.confidence ?? 0}%</div>
-                      <div>Correctness rate: {accuracy}% ({algo.correct}/{algo.attempts})</div>
-                    </div>
-                  );
-                })}
+                    const latest = lastDoneResults.find((entry) => entry.id === algo.id);
+                    const accuracy = algo.attempts ? Math.round((algo.correct / algo.attempts) * 100) : 0;
+                    return (
+                      <div className="stat" key={`${devStatsView}-${algo.id}`}>
+                        <div><strong>Algorithm {algo.id}</strong>{algo.id === 1 ? " (live model)" : ""}</div>
+                        <div>Guess: {latest?.label || "-"}</div>
+                        <div>Guess confidence: {latest?.confidence ?? 0}%</div>
+                        <div>
+                          {devStatsView === "session" ? "Session rate" : "Correctness rate"}: {accuracy}% ({algo.correct}/{algo.attempts})
+                        </div>
+                      </div>
+                    );
+                  })}
               </div>
             </>
           )}
