@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1174,6 +1174,7 @@ function runAlgorithms(vector, dataset) {
       { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: "Need training data first", confidence: 0 },
       { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: "Need training data first", confidence: 0 },
       { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: "Need training data first", confidence: 0 },
+      { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1207,6 +1208,44 @@ function runAlgorithms(vector, dataset) {
   const prototypeNorm = Object.entries(prototypesNormalized)
     .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
     .sort((a, b) => a.distance - b.distance)[0];
+
+  const algorithm34 = (() => {
+    const inputLineFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+    const inputDensity = inputLineFeatures[4] || 0;
+    const nearestSampleLabel = normalizedDistances[0]?.label;
+    const topNeighborLabels = normalizedDistances.slice(0, Math.min(5, normalizedDistances.length));
+    const labelScores = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+      const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+      const prototypeLineFeatures = extractLineFeaturesForSize(prototype, GRID_SIZE);
+      const lineDistance = featureDistance(inputLineFeatures, prototypeLineFeatures);
+      const densityDistance = Math.abs(inputDensity - (prototypeLineFeatures[4] || 0));
+
+      let blendedDistance = prototypeDistance;
+      blendedDistance = blendedDistance * 0.78 + lineDistance * 0.22; // improvement 1: add line-shape blend
+      blendedDistance += densityDistance * 0.08; // improvement 2: add density calibration
+
+      const centerXDelta = Math.abs((inputLineFeatures[5] || 0.5) - (prototypeLineFeatures[5] || 0.5));
+      const centerYDelta = Math.abs((inputLineFeatures[6] || 0.5) - (prototypeLineFeatures[6] || 0.5));
+      blendedDistance += (centerXDelta + centerYDelta) * 0.05; // improvement 3: add center-of-mass alignment
+
+      const baseVote = 1 / Math.max(0.001, blendedDistance + 0.05);
+      const neighborConsensusBonus = topNeighborLabels.reduce((bonus, item, index) => {
+        if (item.label !== label) return bonus;
+        return bonus + 0.05 / (index + 1);
+      }, 0);
+      const nearestSampleBonus = nearestSampleLabel === label ? 0.08 : 0; // improvement 4: nearest-sample support
+
+      acc[label] = baseVote + neighborConsensusBonus + nearestSampleBonus; // improvement 5: local-neighbor consensus
+      return acc;
+    }, {});
+
+    const ranked = Object.entries(labelScores).sort((a, b) => b[1] - a[1]);
+    const probabilities = softmax(ranked.map(([, score]) => score));
+    return {
+      label: ranked[0]?.[0] || "unknown",
+      confidence: Math.round((probabilities[0] || 0) * 100),
+    };
+  })();
 
   const normalizedInputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
   const model32Ranked = Object.entries(prototypesNormalized)
@@ -1258,6 +1297,7 @@ function runAlgorithms(vector, dataset) {
     { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
     { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: model32Best.label, confidence: model32Confidence },
     { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: model33Label, confidence: model33Confidence },
+    { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: algorithm34.label, confidence: algorithm34.confidence },
   ];
 }
 
@@ -1676,7 +1716,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, and 33.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, and 34.</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
