@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 27;
+const ALGORITHM_COUNT = 28;
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -514,6 +514,263 @@ function generateTransformVariantsForSize(vector, size) {
   return [rot0, rot90, rot180, rot270, flipped, flipped90, flipped180, flipped270];
 }
 
+function sampleBilinear(vector, size, x, y) {
+  if (x < 0 || y < 0 || x > size - 1 || y > size - 1) return 0;
+
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(size - 1, x0 + 1);
+  const y1 = Math.min(size - 1, y0 + 1);
+  const tx = x - x0;
+  const ty = y - y0;
+
+  const a = vector[y0 * size + x0] || 0;
+  const b = vector[y0 * size + x1] || 0;
+  const c = vector[y1 * size + x0] || 0;
+  const d = vector[y1 * size + x1] || 0;
+
+  const top = a * (1 - tx) + b * tx;
+  const bottom = c * (1 - tx) + d * tx;
+  return top * (1 - ty) + bottom * ty;
+}
+
+function canonicalizeByMoments(vector, size = 32, r0 = 9) {
+  let m00 = 0;
+  let xSum = 0;
+  let ySum = 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const w = vector[y * size + x] || 0;
+      m00 += w;
+      xSum += x * w;
+      ySum += y * w;
+    }
+  }
+
+  if (m00 < 1e-4) return [...vector];
+
+  const centroidX = xSum / m00;
+  const centroidY = ySum / m00;
+
+  let mu20 = 0;
+  let mu02 = 0;
+  let mu11 = 0;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const w = vector[y * size + x] || 0;
+      const u = x - centroidX;
+      const v = y - centroidY;
+      mu20 += u * u * w;
+      mu02 += v * v * w;
+      mu11 += u * v * w;
+    }
+  }
+
+  const theta = 0.5 * Math.atan2(2 * mu11, mu20 - mu02);
+  const radius = Math.sqrt((mu20 + mu02) / Math.max(m00, 1e-6));
+  const scale = r0 / Math.max(radius, 1e-4);
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+  const center = (size - 1) / 2;
+
+  const output = new Array(size * size).fill(0);
+  for (let yo = 0; yo < size; yo += 1) {
+    for (let xo = 0; xo < size; xo += 1) {
+      const px = xo - center;
+      const py = yo - center;
+      const invX = px / scale;
+      const invY = py / scale;
+      const srcX = cosT * invX - sinT * invY + centroidX;
+      const srcY = sinT * invX + cosT * invY + centroidY;
+      output[yo * size + xo] = sampleBilinear(vector, size, srcX, srcY);
+    }
+  }
+
+  return output;
+}
+
+function blur3x3(vector, size) {
+  const output = new Array(size * size).fill(0);
+  const kernel = [1, 2, 1];
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let total = 0;
+      let weight = 0;
+
+      for (let ky = -1; ky <= 1; ky += 1) {
+        for (let kx = -1; kx <= 1; kx += 1) {
+          const sx = x + kx;
+          const sy = y + ky;
+          if (sx < 0 || sy < 0 || sx >= size || sy >= size) continue;
+          const w = kernel[kx + 1] * kernel[ky + 1];
+          total += (vector[sy * size + sx] || 0) * w;
+          weight += w;
+        }
+      }
+
+      output[y * size + x] = total / Math.max(1, weight);
+    }
+  }
+
+  return output;
+}
+
+function sobelEdges(vector, size, threshold = 0.14) {
+  const edges = new Array(size * size).fill(0);
+
+  for (let y = 1; y < size - 1; y += 1) {
+    for (let x = 1; x < size - 1; x += 1) {
+      const p = (dx, dy) => vector[(y + dy) * size + (x + dx)] || 0;
+      const gx = -p(-1, -1) + p(1, -1) - 2 * p(-1, 0) + 2 * p(1, 0) - p(-1, 1) + p(1, 1);
+      const gy = p(-1, -1) + 2 * p(0, -1) + p(1, -1) - p(-1, 1) - 2 * p(0, 1) - p(1, 1);
+      const mag = Math.sqrt(gx * gx + gy * gy);
+      if (mag > threshold) edges[y * size + x] = 1;
+    }
+  }
+
+  return edges;
+}
+
+function distanceTransformChamfer(edgeMap, size) {
+  const INF = 1e6;
+  const dt = edgeMap.map((v) => (v > 0 ? 0 : INF));
+  const sqrt2 = Math.SQRT2;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const i = y * size + x;
+      let best = dt[i];
+      if (x > 0) best = Math.min(best, dt[i - 1] + 1);
+      if (y > 0) best = Math.min(best, dt[i - size] + 1);
+      if (x > 0 && y > 0) best = Math.min(best, dt[i - size - 1] + sqrt2);
+      if (x < size - 1 && y > 0) best = Math.min(best, dt[i - size + 1] + sqrt2);
+      dt[i] = best;
+    }
+  }
+
+  for (let y = size - 1; y >= 0; y -= 1) {
+    for (let x = size - 1; x >= 0; x -= 1) {
+      const i = y * size + x;
+      let best = dt[i];
+      if (x < size - 1) best = Math.min(best, dt[i + 1] + 1);
+      if (y < size - 1) best = Math.min(best, dt[i + size] + 1);
+      if (x < size - 1 && y < size - 1) best = Math.min(best, dt[i + size + 1] + sqrt2);
+      if (x > 0 && y < size - 1) best = Math.min(best, dt[i + size - 1] + sqrt2);
+      dt[i] = best;
+    }
+  }
+
+  return dt;
+}
+
+function chamferDistance(edgeA, dtB, edgeB, dtA) {
+  let sumA = 0;
+  let countA = 0;
+  for (let i = 0; i < edgeA.length; i += 1) {
+    if (edgeA[i] > 0) {
+      sumA += dtB[i];
+      countA += 1;
+    }
+  }
+
+  let sumB = 0;
+  let countB = 0;
+  for (let i = 0; i < edgeB.length; i += 1) {
+    if (edgeB[i] > 0) {
+      sumB += dtA[i];
+      countB += 1;
+    }
+  }
+
+  const aTerm = countA > 0 ? sumA / countA : 0;
+  const bTerm = countB > 0 ? sumB / countB : 0;
+  return aTerm + bTerm;
+}
+
+function hogLite(vector, size, bins = 8) {
+  const hist = new Array(bins).fill(0);
+  for (let y = 1; y < size - 1; y += 1) {
+    for (let x = 1; x < size - 1; x += 1) {
+      const gx = (vector[y * size + (x + 1)] || 0) - (vector[y * size + (x - 1)] || 0);
+      const gy = (vector[(y + 1) * size + x] || 0) - (vector[(y - 1) * size + x] || 0);
+      const mag = Math.sqrt(gx * gx + gy * gy);
+      if (mag < 1e-6) continue;
+      const angle = Math.atan2(gy, gx);
+      const t = ((angle + Math.PI) / (2 * Math.PI)) * bins;
+      const idx = Math.min(bins - 1, Math.max(0, Math.floor(t)));
+      hist[idx] += mag;
+    }
+  }
+
+  const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+  return hist.map((value) => value / (norm + 1e-6));
+}
+
+function distanceAlgo28(inputFeatures, sampleFeatures, options = {}) {
+  const { alpha = 0.35, beta = 0.45, gamma = 0.2 } = options;
+  const n = Math.max(1, inputFeatures.blurred.length);
+  const k = Math.max(1, inputFeatures.hog.length);
+
+  let pixSum = 0;
+  for (let i = 0; i < inputFeatures.blurred.length; i += 1) {
+    const d = inputFeatures.blurred[i] - sampleFeatures.blurred[i];
+    pixSum += d * d;
+  }
+  const dPix = Math.sqrt(pixSum / n);
+
+  const dCh = chamferDistance(inputFeatures.edge, sampleFeatures.dt, sampleFeatures.edge, inputFeatures.dt) / Math.max(1, inputFeatures.size);
+
+  let hogSum = 0;
+  for (let i = 0; i < inputFeatures.hog.length; i += 1) {
+    const d = inputFeatures.hog[i] - sampleFeatures.hog[i];
+    hogSum += d * d;
+  }
+  const dHog = Math.sqrt(hogSum / k);
+
+  return alpha * dPix + beta * dCh + gamma * dHog;
+}
+
+function buildAlgo28VariantFeatures(baseCanonical, size) {
+  return generateTransformVariantsForSize(baseCanonical, size).map((variant) => {
+    const blurred = blur3x3(variant, size);
+    const edge = sobelEdges(variant, size, 0.14);
+    const dt = distanceTransformChamfer(edge, size);
+    const hog = hogLite(variant, size, 8);
+    return { size, blurred, edge, dt, hog };
+  });
+}
+
+function scoreAlgo28(input, dataset32, options = {}) {
+  const { k = 21, distanceFloor = 0.01, targetRadius = 9 } = options;
+  const size = GRID_SIZE_V3;
+  const inputCanonical = canonicalizeByMoments(input, size, targetRadius);
+  const inputVariants = buildAlgo28VariantFeatures(inputCanonical, size);
+
+  const scored = dataset32.map((item) => {
+    const sampleCanonical = canonicalizeByMoments(item.vector, size, targetRadius);
+    const sampleVariants = buildAlgo28VariantFeatures(sampleCanonical, size);
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    inputVariants.forEach((inVariant) => {
+      sampleVariants.forEach((sampleVariant) => {
+        bestDistance = Math.min(bestDistance, distanceAlgo28(inVariant, sampleVariant));
+      });
+    });
+
+    return { label: item.label, distance: bestDistance };
+  }).sort((a, b) => a.distance - b.distance);
+
+  return voteByInverseDistance(
+    scored.map((item) => ({
+      label: item.label,
+      distance: Math.max(distanceFloor, item.distance),
+    })),
+    k
+  );
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -864,6 +1121,11 @@ function runAlgorithms(vector, dataset) {
     featureWeight: 0.45,
     centerWeightPower: 0,
   });
+  const model28 = scoreAlgo28(input32, dataset32, {
+    k: 21,
+    distanceFloor: 0.01,
+    targetRadius: 9,
+  });
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -905,6 +1167,7 @@ function runAlgorithms(vector, dataset) {
     { id: 25, name: "Algorithm 25 (v3 32x32 Model 21 Baseline)", label: model25.label, confidence: model25.confidence },
     { id: 26, name: "Algorithm 26 (v3 32x32 Rotation/Scale+Center)", label: model26.label, confidence: model26.confidence },
     { id: 27, name: "Algorithm 27 (v3 32x32 Detail Ensemble)", label: model27.label, confidence: model27.confidence },
+    { id: 28, name: "Algorithm 28 (Moment Canonical + Edge-Chamfer + HOG-lite kNN)", label: model28.label, confidence: model28.confidence },
   ];
 }
 
