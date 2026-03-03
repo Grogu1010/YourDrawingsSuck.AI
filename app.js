@@ -653,6 +653,7 @@ function App() {
   const activeStrokeRef = useRef(null);
   const drawingRevisionRef = useRef(0);
   const lastGuessedRevisionRef = useRef(-1);
+  const guessTimeoutRef = useRef(null);
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
@@ -741,6 +742,7 @@ function App() {
     ctx.stroke();
     activeStrokeRef.current?.push(point);
     drawingRevisionRef.current += 1;
+    scheduleGuess();
   };
 
   const stopDrawing = () => {
@@ -765,6 +767,10 @@ function App() {
       hyperDrawV2: { label: "start drawing", confidence: 0 },
     });
     setStatusMessage("");
+    if (guessTimeoutRef.current) {
+      clearTimeout(guessTimeoutRef.current);
+      guessTimeoutRef.current = null;
+    }
   };
 
   const vectorizeCanvas = () => {
@@ -810,7 +816,7 @@ function App() {
 
     const drawingStats = getDrawingStats();
 
-    const needsEarlyGuess = selectedModel === "hyperdraw_v2" || devMode;
+    const shouldGuessV2Early = selectedModel === "hyperdraw_v2" || compareMode || devMode;
 
     if (!drawingStats.hasAnyInk) {
       setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
@@ -818,7 +824,7 @@ function App() {
       return;
     }
 
-    if (!drawingStats.hasMeaningfulDrawing && !needsEarlyGuess) {
+    if (!drawingStats.hasMeaningfulDrawing && !shouldGuessV2Early) {
       setStatusMessage("Draw a little more for HyperDraw to start guessing.");
       setConfidence(0);
       return;
@@ -845,24 +851,42 @@ function App() {
       hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
       hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
     });
-    setLastDoneResults(results);
+    if (devMode) {
+      setLastDoneResults(results);
+    }
     setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
+  };
+
+  const scheduleGuess = (immediate = false) => {
+    if (drawingRevisionRef.current === lastGuessedRevisionRef.current && !immediate) return;
+
+    if (guessTimeoutRef.current) {
+      clearTimeout(guessTimeoutRef.current);
+      guessTimeoutRef.current = null;
+    }
+
+    const delay = immediate ? 0 : 140;
+    guessTimeoutRef.current = setTimeout(() => {
+      if (drawingRevisionRef.current === lastGuessedRevisionRef.current && !immediate) return;
+      lastGuessedRevisionRef.current = drawingRevisionRef.current;
+      guessDrawing();
+      guessTimeoutRef.current = null;
+    }, delay);
   };
 
   const stopDrawingAndGuess = () => {
     stopDrawing();
+    scheduleGuess(true);
   };
 
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      if (!canvasRef.current) return;
-      if (drawingRevisionRef.current === lastGuessedRevisionRef.current) return;
-      lastGuessedRevisionRef.current = drawingRevisionRef.current;
-      guessDrawing();
-    }, 300);
-
-    return () => clearInterval(intervalId);
-  }, [dataset]);
+  useEffect(
+    () => () => {
+      if (guessTimeoutRef.current) {
+        clearTimeout(guessTimeoutRef.current);
+      }
+    },
+    []
+  );
 
   const saveDrawing = () => {
     const drawingStats = getDrawingStats();
