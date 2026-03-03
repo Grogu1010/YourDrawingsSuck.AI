@@ -9,8 +9,9 @@ const OBJECTS = [
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
+const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 const GRID_SIZE = 16;
-const ALGORITHM_COUNT = 9;
+const ALGORITHM_COUNT = 13;
 
 function randomPrompt() {
   return OBJECTS[Math.floor(Math.random() * OBJECTS.length)];
@@ -37,6 +38,39 @@ function loadDataset() {
 
 function saveDataset(dataset) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(dataset));
+}
+
+function createDefaultAlgorithmStats() {
+  return Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({ id: index + 1, attempts: 0, correct: 0 }));
+}
+
+function loadAlgorithmStats() {
+  try {
+    const raw = localStorage.getItem(ALGO_STATS_STORAGE_KEY);
+    if (!raw) return createDefaultAlgorithmStats();
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return createDefaultAlgorithmStats();
+
+    const safeById = parsed.reduce((acc, stat) => {
+      if (!stat || typeof stat.id !== "number") return acc;
+      if (typeof stat.attempts !== "number" || typeof stat.correct !== "number") return acc;
+      acc[stat.id] = {
+        id: stat.id,
+        attempts: Math.max(0, Math.floor(stat.attempts)),
+        correct: Math.max(0, Math.floor(stat.correct)),
+      };
+      return acc;
+    }, {});
+
+    return createDefaultAlgorithmStats().map((defaultStat) => safeById[defaultStat.id] || defaultStat);
+  } catch {
+    return createDefaultAlgorithmStats();
+  }
+}
+
+function saveAlgorithmStats(stats) {
+  localStorage.setItem(ALGO_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
 function distance(a, b) {
@@ -239,6 +273,40 @@ function runAlgorithms(vector, dataset) {
     }))
     .sort((a, b) => a.distance - b.distance)[0];
 
+  const edgeWeighted = dataset
+    .map((item) => ({
+      label: item.label,
+      distance:
+        weightedDistance(normalizedInput, normalizeVector(item.vector), (index) => {
+          const x = index % GRID_SIZE;
+          const y = Math.floor(index / GRID_SIZE);
+          const dx = Math.abs(x - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+          const dy = Math.abs(y - (GRID_SIZE - 1) / 2) / (GRID_SIZE / 2);
+          return 0.8 + Math.min(1, (dx + dy) / 2) * 0.9;
+        }) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const knn21Norm = voteByInverseDistance(normalizedDistances, 21);
+
+  const prototypeBlendScores = Object.entries(prototypesNormalized).map(([label, prototype]) => {
+    const normalizedPrototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+    const nearestSupport = normalizedDistances.filter((item) => item.label === label).slice(0, 3);
+    const nearestSupportDistance =
+      nearestSupport.length > 0
+        ? nearestSupport.reduce((sum, item) => sum + item.distance, 0) / nearestSupport.length
+        : 1;
+
+    return {
+      label,
+      score: 1 / Math.max(0.001, normalizedPrototypeDistance * 0.7 + nearestSupportDistance * 0.3 + 0.02),
+    };
+  });
+
+  const prototypeBlendRanked = prototypeBlendScores.sort((a, b) => b.score - a.score);
+  const prototypeBlendProbabilities = softmax(prototypeBlendRanked.map((item) => item.score));
+  const prototypeBlendTop = prototypeBlendRanked[0];
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 2, name: "Algorithm 2 (Nearest Raw)", label: nearestRaw?.label || "unknown", confidence: Math.round((1 - Math.min(1, nearestRaw?.distance || 1)) * 100) },
@@ -249,6 +317,22 @@ function runAlgorithms(vector, dataset) {
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 8, name: "Algorithm 8 (Center Weighted)", label: centerWeighted?.label || "unknown", confidence: Math.round((1 - Math.min(1, centerWeighted?.distance || 1)) * 100) },
     { id: 9, name: "Algorithm 9 (Binary Shape)", label: binaryNearest?.label || "unknown", confidence: Math.round((1 - Math.min(1, binaryNearest?.distance || 1)) * 100) },
+    { id: 10, name: "Algorithm 10 (Edge Weighted)", label: edgeWeighted?.label || "unknown", confidence: Math.round((1 - Math.min(1, edgeWeighted?.distance || 1)) * 100) },
+    { id: 11, name: "Algorithm 11 (kNN-21 Normalized)", label: knn21Norm.label, confidence: knn21Norm.confidence },
+    {
+      id: 12,
+      name: "Algorithm 12 (Prototype Blend)",
+      label: prototypeBlendTop?.label || "unknown",
+      confidence: Math.round((prototypeBlendProbabilities[0] || 0) * 100),
+    },
+    {
+      id: 13,
+      name: "Algorithm 13 (Raw+Norm Hybrid)",
+      label: nearestNorm?.distance <= (nearestRaw?.distance ?? 1) ? nearestNorm?.label || "unknown" : nearestRaw?.label || "unknown",
+      confidence: Math.round(
+        (1 - Math.min(1, Math.min(nearestNorm?.distance ?? 1, nearestRaw?.distance ?? 1))) * 100
+      ),
+    },
   ];
 }
 
@@ -268,10 +352,12 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
-  const [algorithmStats, setAlgorithmStats] = useState(() =>
-    Array.from({ length: ALGORITHM_COUNT }, (_, index) => ({ id: index + 1, attempts: 0, correct: 0 }))
-  );
+  const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [lastDoneResults, setLastDoneResults] = useState([]);
+
+  useEffect(() => {
+    saveAlgorithmStats(algorithmStats);
+  }, [algorithmStats]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -521,9 +607,17 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all 9 algorithms.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all 13 algorithms.</p>
               <div className="algo-grid">
-                {algorithmStats.map((algo) => {
+                {[...algorithmStats]
+                  .sort((a, b) => {
+                    const aAccuracy = a.attempts ? a.correct / a.attempts : -1;
+                    const bAccuracy = b.attempts ? b.correct / b.attempts : -1;
+                    if (bAccuracy !== aAccuracy) return bAccuracy - aAccuracy;
+                    if (b.correct !== a.correct) return b.correct - a.correct;
+                    return a.id - b.id;
+                  })
+                  .map((algo) => {
                   const latest = lastDoneResults.find((entry) => entry.id === algo.id);
                   const accuracy = algo.attempts ? Math.round((algo.correct / algo.attempts) * 100) : 0;
                   return (
