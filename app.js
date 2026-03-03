@@ -10,6 +10,8 @@ const OBJECTS = [
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
+const INTRO_SEEN_STORAGE_KEY = "yourdrawingssuckai.hyperdrawv2IntroSeen.v1";
+const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 const ALGORITHM_COUNT = 19;
 
@@ -71,6 +73,35 @@ function loadAlgorithmStats() {
 
 function saveAlgorithmStats(stats) {
   localStorage.setItem(ALGO_STATS_STORAGE_KEY, JSON.stringify(stats));
+}
+
+function hasSeenHyperDrawV2Intro() {
+  return localStorage.getItem(INTRO_SEEN_STORAGE_KEY) === "yes";
+}
+
+function markHyperDrawV2IntroSeen() {
+  localStorage.setItem(INTRO_SEEN_STORAGE_KEY, "yes");
+}
+
+function loadCompareStats() {
+  try {
+    const raw = localStorage.getItem(COMPARE_STATS_STORAGE_KEY);
+    if (!raw) return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, ties: 0 };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid stats");
+    return {
+      attempts: Math.max(0, Math.floor(parsed.attempts || 0)),
+      hyperDrawWins: Math.max(0, Math.floor(parsed.hyperDrawWins || 0)),
+      hyperDrawV2Wins: Math.max(0, Math.floor(parsed.hyperDrawV2Wins || 0)),
+      ties: Math.max(0, Math.floor(parsed.ties || 0)),
+    };
+  } catch {
+    return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, ties: 0 };
+  }
+}
+
+function saveCompareStats(stats) {
+  localStorage.setItem(COMPARE_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
 function distance(a, b) {
@@ -477,17 +508,30 @@ function App() {
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
+  const [selectedModel, setSelectedModel] = useState("hyperdraw");
+  const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
   const [confidence, setConfidence] = useState(0);
+  const [compareResults, setCompareResults] = useState({
+    hyperDraw: { label: "start drawing", confidence: 0 },
+    hyperDrawV2: { label: "start drawing", confidence: 0 },
+  });
+  const [compareStats, setCompareStats] = useState(() => loadCompareStats());
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
+  const [showIntro, setShowIntro] = useState(() => !hasSeenHyperDrawV2Intro());
+  const [introDetails, setIntroDetails] = useState(false);
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [lastDoneResults, setLastDoneResults] = useState([]);
 
   useEffect(() => {
     saveAlgorithmStats(algorithmStats);
   }, [algorithmStats]);
+
+  useEffect(() => {
+    saveCompareStats(compareStats);
+  }, [compareStats]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -565,6 +609,10 @@ function App() {
     drawingRevisionRef.current += 1;
     setGuess("start drawing");
     setConfidence(0);
+    setCompareResults({
+      hyperDraw: { label: "start drawing", confidence: 0 },
+      hyperDrawV2: { label: "start drawing", confidence: 0 },
+    });
     setStatusMessage("");
   };
 
@@ -621,12 +669,18 @@ function App() {
     }
 
     const results = runAlgorithms(drawingStats.vec, dataset);
-    const primary = results[0];
-    const conf = Math.max(1, Math.min(99, primary.confidence));
+    const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === 7) || { label: "unknown", confidence: 0 };
+    const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
+    const conf = Math.max(1, Math.min(99, selected.confidence));
     const lowConfidence = conf < 60;
 
-    setGuess(primary.label);
+    setGuess(selected.label);
     setConfidence(conf);
+    setCompareResults({
+      hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
+      hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
+    });
     setLastDoneResults(results);
     setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
   };
@@ -655,6 +709,13 @@ function App() {
 
     const { vec } = drawingStats;
     const results = runAlgorithms(vec, dataset);
+    const hyperDraw = results.find((entry) => entry.id === 1) || { label: "unknown", confidence: 0 };
+    const hyperDrawV2 = results.find((entry) => entry.id === 7) || { label: "unknown", confidence: 0 };
+
+    setCompareResults({
+      hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
+      hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
+    });
     setLastDoneResults(results);
     setAlgorithmStats((previous) =>
       previous.map((algo) => {
@@ -667,6 +728,16 @@ function App() {
         };
       })
     );
+
+    setCompareStats((previous) => {
+      const next = { ...previous, attempts: previous.attempts + 1 };
+      const hyperDrawCorrect = hyperDraw.label === prompt;
+      const hyperDrawV2Correct = hyperDrawV2.label === prompt;
+      if (hyperDrawCorrect && !hyperDrawV2Correct) next.hyperDrawWins += 1;
+      else if (hyperDrawV2Correct && !hyperDrawCorrect) next.hyperDrawV2Wins += 1;
+      else next.ties += 1;
+      return next;
+    });
 
     const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
     setDataset(updated);
@@ -684,6 +755,56 @@ function App() {
       }, {}),
     [dataset]
   );
+
+  if (showIntro) {
+    return (
+      <main className="app intro-screen">
+        <section className="card intro-card">
+          <h1>INTRODUCING HYPERDRAWv2! Faster, Smarter, Better 😎</h1>
+          {!introDetails ? (
+            <>
+              <p className="subtitle">A major drawing intelligence upgrade just landed.</p>
+              <div className="row">
+                <button className="primary" onClick={() => setIntroDetails(true)}>More info</button>
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    markHyperDrawV2IntroSeen();
+                    setShowIntro(false);
+                  }}
+                >
+                  Continue
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p>
+                HyperDraw learned from direct pattern matching and was great at quick nearest-shape guesses.
+                It compares your sketch against examples to identify the most likely object.
+              </p>
+              <p>
+                HyperDraw_v2 adds stronger normalized shape matching, letting it understand messy sketches,
+                scale changes, and alignment shifts much better. That means it reaches a confident answer faster
+                and more accurately on rough drawings.
+              </p>
+              <div className="row">
+                <button
+                  className="primary"
+                  onClick={() => {
+                    markHyperDrawV2IntroSeen();
+                    setShowIntro(false);
+                  }}
+                >
+                  Continue
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="app">
@@ -720,12 +841,50 @@ function App() {
 
         <aside className="card">
           <h2>AI Guess</h2>
-          <p className="big">{guess}</p>
-          <p>Confidence: {confidence}%</p>
+          <div className="row controls-row">
+            <label>
+              Model:&nbsp;
+              <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+                <option value="hyperdraw">HyperDraw</option>
+                <option value="hyperdraw_v2">HyperDraw_v2</option>
+              </select>
+            </label>
+            <button className={`secondary ${compareMode ? "active" : ""}`} onClick={() => setCompareMode((on) => !on)}>
+              {compareMode ? "Hide Compare" : "Compare"}
+            </button>
+          </div>
+          {!compareMode ? (
+            <>
+              <p className="big">{guess}</p>
+              <p>Confidence: {confidence}%</p>
+            </>
+          ) : (
+            <div className="compare-grid">
+              <div className="stat">
+                <div><strong>HyperDraw</strong></div>
+                <div>Guess: {compareResults.hyperDraw.label}</div>
+                <div>Confidence: {compareResults.hyperDraw.confidence}%</div>
+              </div>
+              <div className="stat">
+                <div><strong>HyperDraw_v2</strong></div>
+                <div>Guess: {compareResults.hyperDrawV2.label}</div>
+                <div>Confidence: {compareResults.hyperDrawV2.confidence}%</div>
+              </div>
+            </div>
+          )}
+
           <div className="stats">
             <div className="stat"><div>Total drawings</div><div className="big">{dataset.length}</div></div>
             <div className="stat"><div>Objects learned</div><div className="big">{Object.keys(promptCounts).length}</div></div>
           </div>
+
+          <div className="stats">
+            <div className="stat"><div>Compare rounds</div><div className="big">{compareStats.attempts}</div></div>
+            <div className="stat"><div>HyperDraw wins</div><div className="big">{compareStats.hyperDrawWins}</div></div>
+            <div className="stat"><div>HyperDraw_v2 wins</div><div className="big">{compareStats.hyperDrawV2Wins}</div></div>
+            <div className="stat"><div>Ties</div><div className="big">{compareStats.ties}</div></div>
+          </div>
+
           <h3>Top trained objects</h3>
           <ul>
             {Object.entries(promptCounts)

@@ -124,3 +124,41 @@ button.secondary.active {
     grid-template-columns: 1fr;
   }
 }
+
+.controls-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+select {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 0.4rem 0.55rem;
+  background: #111827;
+  color: #f9fafb;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.intro-screen {
+  max-width: 760px;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.intro-card h1 {
+  margin-top: 0;
+}
+
+@media (max-width: 800px) {
+  .compare-grid {
+    grid-template-columns: 1fr;
+  }
+}
