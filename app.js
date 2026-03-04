@@ -1192,92 +1192,158 @@ function getTransformOffsets() {
   return targets.flatMap((y) => targets.map((x) => ({ x: x - center, y: y - center })));
 }
 
-function buildAlg59Variants(vector) {
-  const base = normalizeVector(vector);
-  const scales = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75];
-  const rotations = Array.from({ length: 24 }, (_, index) => index * 15);
-  const flips = [
-    { horizontal: false, vertical: false },
-    { horizontal: true, vertical: false },
-    { horizontal: false, vertical: true },
-  ];
-  const offsets = getTransformOffsets();
+function getCoarseTransformOffsets() {
   const center = (GRID_SIZE - 1) / 2;
+  const coarseTargets = [
+    { xRatio: 0.5, yRatio: 0.5 },
+    { xRatio: 1 / 6, yRatio: 1 / 4 },
+    { xRatio: 3 / 6, yRatio: 1 / 4 },
+    { xRatio: 5 / 6, yRatio: 1 / 4 },
+    { xRatio: 1 / 6, yRatio: 3 / 4 },
+    { xRatio: 3 / 6, yRatio: 3 / 4 },
+    { xRatio: 5 / 6, yRatio: 3 / 4 },
+  ];
 
+  return coarseTargets.map((target) => ({
+    x: (GRID_SIZE - 1) * target.xRatio - center,
+    y: (GRID_SIZE - 1) * target.yRatio - center,
+  }));
+}
+
+function getActivePoints(vector) {
   const activePoints = [];
   for (let y = 0; y < GRID_SIZE; y += 1) {
     for (let x = 0; x < GRID_SIZE; x += 1) {
-      const value = base[y * GRID_SIZE + x];
+      const value = vector[y * GRID_SIZE + x];
       if (value > 0.05) activePoints.push({ x, y, value });
     }
   }
+  return activePoints;
+}
 
-  if (!activePoints.length) return [base];
+function* buildAlg59VariantsCoarse(baseVector) {
+  const offsets = getCoarseTransformOffsets();
+  const scales = [0.5, 1, 1.5];
+  const rotations = [0, 45, 90, 135, 180, 225, 270, 315];
+  const flips = [
+    { horizontal: false, vertical: false },
+    { horizontal: true, vertical: false },
+  ];
+  if (!baseVector) return;
 
-  const variants = [];
-  offsets.forEach((offset) => {
-    scales.forEach((scale) => {
-      rotations.forEach((rotationDeg) => {
-        const radians = (rotationDeg * Math.PI) / 180;
-        const cos = Math.cos(radians);
-        const sin = Math.sin(radians);
+  for (const offset of offsets) {
+    for (const scale of scales) {
+      for (const rotationDeg of rotations) {
+        for (const flip of flips) {
+          yield { offset, scale, rotationDeg, flip };
+        }
+      }
+    }
+  }
+}
 
-        flips.forEach((flip) => {
-          const variant = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+function computeBestDistanceToTransformedSample(inputNorm, sampleNorm, config) {
+  const activePoints = getActivePoints(sampleNorm);
+  const normFactor = Math.sqrt(inputNorm.length);
 
-          activePoints.forEach((point) => {
-            let dx = point.x - center;
-            let dy = point.y - center;
+  if (!activePoints.length) {
+    return distance(inputNorm, sampleNorm) / normFactor;
+  }
 
-            if (flip.horizontal) dx = -dx;
-            if (flip.vertical) dy = -dy;
+  const center = (GRID_SIZE - 1) / 2;
+  const scratch = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+  let bestDistance = Number.POSITIVE_INFINITY;
 
-            dx *= scale;
-            dy *= scale;
+  const applyTransforms = config.coarse
+    ? buildAlg59VariantsCoarse(sampleNorm)
+    : (function* buildFullGridTransforms() {
+        for (const offset of config.offsets) {
+          for (const scale of config.scales) {
+            for (const rotationDeg of config.rotations) {
+              for (const flip of config.flips) {
+                yield { offset, scale, rotationDeg, flip };
+              }
+            }
+          }
+        }
+      })();
 
-            const rx = dx * cos - dy * sin;
-            const ry = dx * sin + dy * cos;
+  for (const transform of applyTransforms) {
+    scratch.fill(0);
 
-            const nx = Math.round(rx + center + offset.x);
-            const ny = Math.round(ry + center + offset.y);
-            if (nx < 0 || ny < 0 || nx >= GRID_SIZE || ny >= GRID_SIZE) return;
+    const radians = (transform.rotationDeg * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
 
-            const idx = ny * GRID_SIZE + nx;
-            variant[idx] = Math.max(variant[idx], point.value);
-          });
+    for (const point of activePoints) {
+      let dx = point.x - center;
+      let dy = point.y - center;
 
-          variants.push(variant);
-        });
-      });
-    });
-  });
+      if (transform.flip.horizontal) dx = -dx;
+      if (transform.flip.vertical) dy = -dy;
 
-  return variants;
+      dx *= transform.scale;
+      dy *= transform.scale;
+
+      const rx = dx * cos - dy * sin;
+      const ry = dx * sin + dy * cos;
+
+      const nx = Math.round(rx + center + transform.offset.x);
+      const ny = Math.round(ry + center + transform.offset.y);
+      if (nx < 0 || ny < 0 || nx >= GRID_SIZE || ny >= GRID_SIZE) continue;
+
+      const idx = ny * GRID_SIZE + nx;
+      if (point.value > scratch[idx]) scratch[idx] = point.value;
+    }
+
+    const d = distance(inputNorm, scratch) / normFactor;
+    if (d < bestDistance) bestDistance = d;
+  }
+
+  return bestDistance;
 }
 
 function scoreAlgorithm59(inputVector, dataset) {
   const inputNorm = normalizeVector(inputVector);
 
-  const scored = dataset
+  const fineConfig = {
+    coarse: false,
+    offsets: getTransformOffsets(),
+    scales: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75],
+    rotations: Array.from({ length: 24 }, (_, index) => index * 15),
+    flips: [
+      { horizontal: false, vertical: false },
+      { horizontal: true, vertical: false },
+      { horizontal: false, vertical: true },
+    ],
+  };
+
+  const coarseRanked = dataset
     .map((item, index) => {
       const sampleNorm = normalizeVector(item.vector);
-      const variants = buildAlg59Variants(sampleNorm);
-      let bestDistance = Number.POSITIVE_INFINITY;
-
-      variants.forEach((variant) => {
-        const d = distance(inputNorm, variant) / Math.sqrt(inputNorm.length);
-        if (d < bestDistance) bestDistance = d;
-      });
+      const coarseDistance = computeBestDistanceToTransformedSample(inputNorm, sampleNorm, { coarse: true });
 
       return {
         datasetIndex: index,
         label: item.label,
-        distance: bestDistance,
+        sampleNorm,
+        coarseDistance,
       };
     })
+    .sort((a, b) => a.coarseDistance - b.coarseDistance);
+
+  const candidateCount = Math.max(1, Math.floor(dataset.length * 0.05));
+  const candidates = coarseRanked.slice(0, candidateCount);
+
+  const fineScored = candidates
+    .map((candidate) => ({
+      datasetIndex: candidate.datasetIndex,
+      label: candidate.label,
+      distance: computeBestDistanceToTransformedSample(inputNorm, candidate.sampleNorm, fineConfig),
+    }))
     .sort((a, b) => a.distance - b.distance);
 
-  const topUniqueDrawings = scored.slice(0, Math.min(4, scored.length));
+  const topUniqueDrawings = fineScored.slice(0, Math.min(4, fineScored.length));
   const vote = voteByInverseDistance(
     topUniqueDrawings.map((entry) => ({
       label: entry.label,
