@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1176,6 +1176,7 @@ function runAlgorithms(vector, dataset) {
       { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: "Need training data first", confidence: 0 },
       { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: "Need training data first", confidence: 0 },
       { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: "Need training data first", confidence: 0 },
+      { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1246,6 +1247,16 @@ function runAlgorithms(vector, dataset) {
       label: ranked[0]?.[0] || "unknown",
       confidence: Math.round((probabilities[0] || 0) * 100),
       labelScores,
+    };
+  })();
+
+  const algorithm36 = (() => {
+    const ranked = Object.entries(algorithm34.labelScores).sort((a, b) => b[1] - a[1]);
+    const sharpenedProbabilities = softmax(ranked.map(([, score]) => score * 2.6));
+    const boostedConfidence = Math.round((sharpenedProbabilities[0] || 0) * 100);
+    return {
+      label: ranked[0]?.[0] || "unknown",
+      confidence: Math.max(1, Math.min(99, boostedConfidence)),
     };
   })();
 
@@ -1323,6 +1334,7 @@ function runAlgorithms(vector, dataset) {
     { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: model33Label, confidence: model33Confidence },
     { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: algorithm34.label, confidence: algorithm34.confidence },
     { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: model35.label, confidence: model35.confidence },
+    { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: algorithm36.label, confidence: algorithm36.confidence },
   ];
 }
 
@@ -1741,7 +1753,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, and 35.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, and 36.</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
