@@ -1272,6 +1272,7 @@ function scoreAlgo64(input16, dataset16, options = {}) {
   const {
     radialBins = 8,
     angleBins = 16,
+    topLabels = 8,
     k = 19,
     distanceFloor = 0.01,
   } = options;
@@ -1287,6 +1288,66 @@ function scoreAlgo64(input16, dataset16, options = {}) {
       label: item.label,
       distance: Math.max(distanceFloor, raesInvariantDistance(inputDesc, item.desc)),
     }))
+  const inputTransforms = generateTransformVariantsForSize(input16, GRID_SIZE);
+  const inputDescriptors = inputTransforms.map((variant) => buildRaesDescriptor(variant, GRID_SIZE, radialBins, angleBins));
+  const descriptors = dataset16.map((item) => ({
+    label: item.label,
+    desc: buildRaesDescriptor(item.vector, GRID_SIZE, radialBins, angleBins),
+  }));
+
+  const grouped = descriptors.reduce((acc, item) => {
+    if (!acc[item.label]) {
+      acc[item.label] = {
+        count: 0,
+        hist: new Array(radialBins * angleBins).fill(0),
+        inkDensity: 0,
+      };
+    }
+    acc[item.label].count += 1;
+    acc[item.label].inkDensity += item.desc.inkDensity;
+    for (let i = 0; i < acc[item.label].hist.length; i += 1) {
+      acc[item.label].hist[i] += item.desc.hist[i];
+    }
+    return acc;
+  }, {});
+
+  const prototypeRanked = Object.entries(grouped)
+    .map(([label, proto]) => {
+      const count = Math.max(1, proto.count);
+      const hist = proto.hist.map((value) => value / count);
+      const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+      const prototypeDesc = {
+        hist: hist.map((value) => value / Math.max(norm, 1e-6)),
+        radialBins,
+        angleBins,
+        inkDensity: proto.inkDensity / count,
+      };
+
+      const bestDistance = inputDescriptors.reduce(
+        (best, inputDesc) => Math.min(best, raesInvariantDistance(inputDesc, prototypeDesc)),
+        Number.POSITIVE_INFINITY
+      );
+
+      return {
+        label,
+        distance: bestDistance,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const candidateLabels = new Set(prototypeRanked.slice(0, Math.min(topLabels, prototypeRanked.length)).map((entry) => entry.label));
+  const scored = descriptors
+    .filter((item) => candidateLabels.has(item.label))
+    .map((item) => {
+      const bestDistance = inputDescriptors.reduce(
+        (best, inputDesc) => Math.min(best, raesInvariantDistance(inputDesc, item.desc)),
+        Number.POSITIVE_INFINITY
+      );
+      return {
+        label: item.label,
+        distance: Math.max(distanceFloor, bestDistance),
+      };
+    })
     .sort((a, b) => a.distance - b.distance);
 
   return voteByInverseDistance(scored, k);
