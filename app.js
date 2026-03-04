@@ -9,6 +9,7 @@ const OBJECTS = [
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
+const PENDING_SYNC_STORAGE_KEY = "yourdrawingssuckai.pendingSync.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
@@ -17,6 +18,7 @@ const GRID_SIZE = 16;
 const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
+const SERVER_BASE_URL = "http://localhost:8787";
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -65,35 +67,7 @@ function loadDataset() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    const downscale32To16 = (vector) => {
-      if (!Array.isArray(vector) || vector.length !== 32 * 32) return vector;
-      const output = new Array(GRID_SIZE * GRID_SIZE).fill(0);
-      for (let y = 0; y < GRID_SIZE; y += 1) {
-        for (let x = 0; x < GRID_SIZE; x += 1) {
-          let sum = 0;
-          for (let oy = 0; oy < 2; oy += 1) {
-            for (let ox = 0; ox < 2; ox += 1) {
-              const sourceX = x * 2 + ox;
-              const sourceY = y * 2 + oy;
-              sum += vector[sourceY * 32 + sourceX] || 0;
-            }
-          }
-          output[y * GRID_SIZE + x] = sum / 4;
-        }
-      }
-      return output;
-    };
-
-    return parsed.filter(
-      (item) =>
-        item &&
-        typeof item.label === "string" &&
-        Array.isArray(item.vector) &&
-        typeof item.ts === "number"
-    ).map((item) => ({
-      ...item,
-      vector: downscale32To16(item.vector),
-    })).filter((item) => item.vector.length === GRID_SIZE * GRID_SIZE);
+    return parsed.map(normalizeDrawingItem).filter(Boolean);
   } catch {
     return [];
   }
@@ -101,6 +75,94 @@ function loadDataset() {
 
 function saveDataset(dataset) {
   setStorageItem(STORAGE_KEY, JSON.stringify(dataset));
+}
+
+
+function normalizeDrawingItem(item) {
+  if (!item || typeof item.label !== "string" || !Array.isArray(item.vector)) return null;
+
+  const downscale32To16 = (vector) => {
+    if (!Array.isArray(vector) || vector.length !== 32 * 32) return vector;
+    const output = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+    for (let y = 0; y < GRID_SIZE; y += 1) {
+      for (let x = 0; x < GRID_SIZE; x += 1) {
+        let sum = 0;
+        for (let oy = 0; oy < 2; oy += 1) {
+          for (let ox = 0; ox < 2; ox += 1) {
+            const sourceX = x * 2 + ox;
+            const sourceY = y * 2 + oy;
+            sum += vector[sourceY * 32 + sourceX] || 0;
+          }
+        }
+        output[y * GRID_SIZE + x] = sum / 4;
+      }
+    }
+    return output;
+  };
+
+  const vector = downscale32To16(item.vector);
+  if (!Array.isArray(vector) || vector.length !== GRID_SIZE * GRID_SIZE) return null;
+
+  return {
+    label: item.label.trim().toLowerCase(),
+    vector,
+    ts: typeof item.ts === "number" ? item.ts : Date.now(),
+    id:
+      typeof item.id === "string" && item.id
+        ? item.id
+        : `${typeof item.ts === "number" ? item.ts : Date.now()}-${item.label}-${Math.random().toString(36).slice(2, 8)}`,
+  };
+}
+
+function mergeDatasets(localDataset, remoteDataset) {
+  const byId = new Map();
+  [...localDataset, ...remoteDataset].forEach((item) => {
+    const normalized = normalizeDrawingItem(item);
+    if (!normalized) return;
+    const key = normalized.id || `${normalized.ts}-${normalized.label}`;
+    const existing = byId.get(key);
+    if (!existing || normalized.ts > existing.ts) {
+      byId.set(key, normalized);
+    }
+  });
+
+  return [...byId.values()].sort((a, b) => a.ts - b.ts).slice(-2000);
+}
+
+function loadPendingSyncQueue() {
+  try {
+    const raw = getStorageItem(PENDING_SYNC_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeDrawingItem).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function savePendingSyncQueue(queue) {
+  setStorageItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(queue));
+}
+
+async function fetchServerDataset() {
+  const response = await fetch(`${SERVER_BASE_URL}/api/drawings`, { method: "GET" });
+  if (!response.ok) throw new Error(`Server GET failed: ${response.status}`);
+  const payload = await response.json();
+  if (!Array.isArray(payload)) return [];
+  return payload.map(normalizeDrawingItem).filter(Boolean);
+}
+
+async function uploadDrawingToServer(drawing) {
+  const response = await fetch(`${SERVER_BASE_URL}/api/drawings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(drawing),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Server POST failed: ${response.status}`);
+  }
 }
 
 function createDefaultAlgorithmStats() {
@@ -2281,6 +2343,7 @@ function App() {
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
+  const [pendingSyncQueue, setPendingSyncQueue] = useState(() => loadPendingSyncQueue());
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
@@ -2290,6 +2353,48 @@ function App() {
   useEffect(() => {
     saveCompareStats(compareStats);
   }, [compareStats]);
+
+  useEffect(() => {
+    savePendingSyncQueue(pendingSyncQueue);
+  }, [pendingSyncQueue]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncAll = async () => {
+      try {
+        const remote = await fetchServerDataset();
+        if (cancelled) return;
+
+        const merged = mergeDatasets(dataset, remote);
+        setDataset(merged);
+        saveDataset(merged);
+
+        if (pendingSyncQueue.length > 0) {
+          for (const drawing of pendingSyncQueue) {
+            await uploadDrawingToServer(drawing);
+          }
+
+          if (cancelled) return;
+          setPendingSyncQueue([]);
+
+          const refreshedRemote = await fetchServerDataset();
+          if (cancelled) return;
+          const mergedAfterUpload = mergeDatasets(merged, refreshedRemote);
+          setDataset(mergedAfterUpload);
+          saveDataset(mergedAfterUpload);
+        }
+      } catch {
+      }
+    };
+
+    syncAll();
+    const interval = window.setInterval(syncAll, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [pendingSyncQueue.length]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2311,6 +2416,8 @@ function App() {
     ctx.strokeStyle = isErasing ? "#ffffff" : "#111827";
     ctx.lineWidth = isErasing ? 32 : 20;
   }, [isErasing]);
+
+
 
   const getPoint = (event) => {
     const canvas = canvasRef.current;
@@ -2545,12 +2652,25 @@ function App() {
       return next;
     });
 
-    const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
+    const drawing = normalizeDrawingItem({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      label: prompt,
+      vector: vec,
+      ts: Date.now(),
+    });
+    const updated = mergeDatasets(dataset, [drawing]);
     setDataset(updated);
     saveDataset(updated);
+
+    uploadDrawingToServer(drawing)
+      .catch(() => {
+        setPendingSyncQueue((previous) => mergeDatasets(previous, [drawing]));
+      });
+
+
     setPrompt(randomPrompt());
     clearCanvas();
-    setStatusMessage("Done! Added to dataset and moved to the next prompt.");
+    setStatusMessage("Done! Saved locally and queued for server sync if needed.");
   };
 
   const promptCounts = useMemo(
@@ -2571,6 +2691,8 @@ function App() {
         <button className={`secondary ${activeTab === "draw" ? "active" : ""}`} onClick={() => setActiveTab("draw")}>Draw Lab</button>
         <button className={`secondary ${activeTab === "articles" ? "active" : ""}`} onClick={() => setActiveTab("articles")}>Articles</button>
       </div>
+
+
 
       {activeTab === "draw" ? (
       <div className="grid">
