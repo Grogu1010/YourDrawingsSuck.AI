@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 59];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1166,39 +1166,120 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
   return { hyperDraw, hyperDrawV2 };
 }
 
+function getTransformOffsets() {
+  const center = (GRID_SIZE - 1) / 2;
+  const targets = [0.25, 0.5, 0.75].map((ratio) => (GRID_SIZE - 1) * ratio);
+  return targets.flatMap((y) => targets.map((x) => ({ x: x - center, y: y - center })));
+}
+
+function buildAlg59Variants(vector) {
+  const base = normalizeVector(vector);
+  const scales = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75];
+  const rotations = Array.from({ length: 24 }, (_, index) => index * 15);
+  const flips = [
+    { horizontal: false, vertical: false },
+    { horizontal: true, vertical: false },
+    { horizontal: false, vertical: true },
+  ];
+  const offsets = getTransformOffsets();
+  const center = (GRID_SIZE - 1) / 2;
+
+  const activePoints = [];
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const value = base[y * GRID_SIZE + x];
+      if (value > 0.05) activePoints.push({ x, y, value });
+    }
+  }
+
+  if (!activePoints.length) return [base];
+
+  const variants = [];
+  offsets.forEach((offset) => {
+    scales.forEach((scale) => {
+      rotations.forEach((rotationDeg) => {
+        const radians = (rotationDeg * Math.PI) / 180;
+        const cos = Math.cos(radians);
+        const sin = Math.sin(radians);
+
+        flips.forEach((flip) => {
+          const variant = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+
+          activePoints.forEach((point) => {
+            let dx = point.x - center;
+            let dy = point.y - center;
+
+            if (flip.horizontal) dx = -dx;
+            if (flip.vertical) dy = -dy;
+
+            dx *= scale;
+            dy *= scale;
+
+            const rx = dx * cos - dy * sin;
+            const ry = dx * sin + dy * cos;
+
+            const nx = Math.round(rx + center + offset.x);
+            const ny = Math.round(ry + center + offset.y);
+            if (nx < 0 || ny < 0 || nx >= GRID_SIZE || ny >= GRID_SIZE) return;
+
+            const idx = ny * GRID_SIZE + nx;
+            variant[idx] = Math.max(variant[idx], point.value);
+          });
+
+          variants.push(variant);
+        });
+      });
+    });
+  });
+
+  return variants;
+}
+
+function scoreAlgorithm59(inputVector, dataset) {
+  const inputNorm = normalizeVector(inputVector);
+
+  const scored = dataset
+    .map((item, index) => {
+      const sampleNorm = normalizeVector(item.vector);
+      const variants = buildAlg59Variants(sampleNorm);
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      variants.forEach((variant) => {
+        const d = distance(inputNorm, variant) / Math.sqrt(inputNorm.length);
+        if (d < bestDistance) bestDistance = d;
+      });
+
+      return {
+        datasetIndex: index,
+        label: item.label,
+        distance: bestDistance,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const topUniqueDrawings = scored.slice(0, Math.min(4, scored.length));
+  const vote = voteByInverseDistance(
+    topUniqueDrawings.map((entry) => ({
+      label: entry.label,
+      distance: Math.max(0.02, entry.distance),
+    })),
+    4
+  );
+
+  return {
+    label: vote.label,
+    confidence: vote.confidence,
+  };
+}
+
 function runAlgorithms(vector, dataset) {
   if (!dataset.length) {
     return [
       { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
-      { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: "Need training data first", confidence: 0 },
-      { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: "Need training data first", confidence: 0 },
-      { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: "Need training data first", confidence: 0 },
-      { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: "Need training data first", confidence: 0 },
-      { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: "Need training data first", confidence: 0 },
-      { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: "Need training data first", confidence: 0 },
-      { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: "Need training data first", confidence: 0 },
-      { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: "Need training data first", confidence: 0 },
-      { id: 39, name: "Algorithm 39 (Dev: Alg7 + line blend)", label: "Need training data first", confidence: 0 },
-      { id: 40, name: "Algorithm 40 (Dev: Alg7 + density trim)", label: "Need training data first", confidence: 0 },
-      { id: 41, name: "Algorithm 41 (Dev: Alg7 + center trim)", label: "Need training data first", confidence: 0 },
-      { id: 42, name: "Algorithm 42 (Dev: Alg7 + line+density)", label: "Need training data first", confidence: 0 },
-      { id: 43, name: "Algorithm 43 (Dev: Alg7 + line+center)", label: "Need training data first", confidence: 0 },
-      { id: 44, name: "Algorithm 44 (Dev: Alg7 + density+center)", label: "Need training data first", confidence: 0 },
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
-      { id: 46, name: "Algorithm 46 (Dev: Alg7 + 6NN support)", label: "Need training data first", confidence: 0 },
-      { id: 47, name: "Algorithm 47 (Dev: Alg7 + class-balance)", label: "Need training data first", confidence: 0 },
-      { id: 48, name: "Algorithm 48 (Dev: Alg7 + line+balance)", label: "Need training data first", confidence: 0 },
-      { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", label: "Need training data first", confidence: 0 },
-      { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", label: "Need training data first", confidence: 0 },
-      { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", label: "Need training data first", confidence: 0 },
-      { id: 52, name: "Algorithm 52 (Dev: Alg45 + denser 4NN)", label: "Need training data first", confidence: 0 },
-      { id: 53, name: "Algorithm 53 (Dev: Alg45 + balance guard)", label: "Need training data first", confidence: 0 },
-      { id: 54, name: "Algorithm 54 (Dev: Alg45 + center trim)", label: "Need training data first", confidence: 0 },
-      { id: 55, name: "Algorithm 55 (Dev: Alg45 + line assist)", label: "Need training data first", confidence: 0 },
-      { id: 56, name: "Algorithm 56 (Dev: Alg45 + line+dense)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
-      { id: 58, name: "Algorithm 58 (Dev: Alg45 + inverse-neighbor energy)", label: "Need training data first", confidence: 0 },
+      { id: 59, name: "Algorithm 59 (Dev: Alg57 + transform-grid 4NN)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1233,222 +1314,17 @@ function runAlgorithms(vector, dataset) {
     .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
     .sort((a, b) => a.distance - b.distance)[0];
 
-  const algorithm34 = (() => {
-    const inputLineFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
-    const inputDensity = inputLineFeatures[4] || 0;
-    const nearestSampleLabel = normalizedDistances[0]?.label;
-    const topNeighborLabels = normalizedDistances.slice(0, Math.min(5, normalizedDistances.length));
-    const labelScores = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
-      const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
-      const prototypeLineFeatures = extractLineFeaturesForSize(prototype, GRID_SIZE);
-      const lineDistance = featureDistance(inputLineFeatures, prototypeLineFeatures);
-      const densityDistance = Math.abs(inputDensity - (prototypeLineFeatures[4] || 0));
-
-      let blendedDistance = prototypeDistance;
-      blendedDistance = blendedDistance * 0.78 + lineDistance * 0.22; // improvement 1: add line-shape blend
-      blendedDistance += densityDistance * 0.08; // improvement 2: add density calibration
-
-      const centerXDelta = Math.abs((inputLineFeatures[5] || 0.5) - (prototypeLineFeatures[5] || 0.5));
-      const centerYDelta = Math.abs((inputLineFeatures[6] || 0.5) - (prototypeLineFeatures[6] || 0.5));
-      blendedDistance += (centerXDelta + centerYDelta) * 0.05; // improvement 3: add center-of-mass alignment
-
-      const baseVote = 1 / Math.max(0.001, blendedDistance + 0.05);
-      const neighborConsensusBonus = topNeighborLabels.reduce((bonus, item, index) => {
-        if (item.label !== label) return bonus;
-        return bonus + 0.05 / (index + 1);
-      }, 0);
-      const nearestSampleBonus = nearestSampleLabel === label ? 0.08 : 0; // improvement 4: nearest-sample support
-
-      acc[label] = baseVote + neighborConsensusBonus + nearestSampleBonus; // improvement 5: local-neighbor consensus
-      return acc;
-    }, {});
-
-    const ranked = Object.entries(labelScores).sort((a, b) => b[1] - a[1]);
-    const probabilities = softmax(ranked.map(([, score]) => score));
-    return {
-      label: ranked[0]?.[0] || "unknown",
-      confidence: Math.round((probabilities[0] || 0) * 100),
-      labelScores,
-    };
-  })();
-
-  const algorithm36 = (() => {
-    const ranked = Object.entries(algorithm34.labelScores).sort((a, b) => b[1] - a[1]);
-    const sharpenedProbabilities = softmax(ranked.map(([, score]) => score * 2.6));
-    const boostedConfidence = Math.round((sharpenedProbabilities[0] || 0) * 100);
-    return {
-      label: ranked[0]?.[0] || "unknown",
-      confidence: Math.max(1, Math.min(99, boostedConfidence)),
-    };
-  })();
-
-  const normalizedInputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
-  const model32Ranked = Object.entries(prototypesNormalized)
-    .map(([label, proto]) => {
-      const prototypeDistance = distance(normalizedInput, proto) / Math.sqrt(vector.length);
-      const lineDistance = featureDistance(normalizedInputFeatures, extractLineFeaturesForSize(proto, GRID_SIZE));
-      return {
-        label,
-        score: prototypeDistance * 0.6 + lineDistance * 0.4,
-      };
-    })
-    .sort((a, b) => a.score - b.score);
-
-  const model32Best = model32Ranked[0] || { label: "unknown", score: 1 };
-  const model32Confidence = Math.round((1 - Math.min(1, model32Best.score)) * 100);
-  const model32ScoresByLabel = model32Ranked.reduce((acc, entry) => {
-    acc[entry.label] = entry.score;
+  const inputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+  const prototypeFeaturesByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = extractLineFeaturesForSize(prototype, GRID_SIZE);
     return acc;
   }, {});
-
-  const model35Ranked = Object.keys(prototypesNormalized)
-    .map((label) => {
-      const model32Vote = 1 / Math.max(0.001, (model32ScoresByLabel[label] ?? 1) + 0.05);
-      const model34Vote = algorithm34.labelScores[label] || 0;
-      const agreementBonus = label === model32Best.label && label === algorithm34.label ? 0.12 : 0;
-      return {
-        label,
-        score: model32Vote * 0.45 + model34Vote * 0.55 + agreementBonus,
-      };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const model35Probabilities = softmax(model35Ranked.map((entry) => entry.score));
-  const model35 = {
-    label: model35Ranked[0]?.label || "unknown",
-    confidence: Math.round((model35Probabilities[0] || 0) * 100),
-  };
-
-  const model21 = scoreTransformInvariantModel(vector, dataset, {
-    k: 17,
-    distanceFloor: 0.02,
-    featureWeight: 0.35,
-    centerWeightPower: 0,
-  });
-
-  const model33LineRanked = Object.entries(prototypesNormalized)
-    .map(([label, proto]) => {
-      const lineDistance = featureDistance(normalizedInputFeatures, extractLineFeaturesForSize(proto, GRID_SIZE));
-      return {
-        label,
-        score: lineDistance,
-      };
-    })
-    .sort((a, b) => a.score - b.score);
-
-  const model33LineBest = model33LineRanked[0] || { label: "unknown", score: 1 };
-  const model33LineConfidence = Math.round((1 - Math.min(1, model33LineBest.score)) * 100);
-  const model33Agree = model21.label === model33LineBest.label;
-  const model33Label = model33Agree || model21.confidence >= 55 ? model21.label : model33LineBest.label;
-  const model33Confidence = Math.max(
-    1,
-    Math.min(
-      99,
-      Math.round(model21.confidence * 0.72 + model33LineConfidence * 0.28 + (model33Agree ? 6 : -4))
-    )
-  );
-
-  const algorithm37 = (() => {
-    const topNeighbors = normalizedDistances.slice(0, Math.min(3, normalizedDistances.length));
-    const labelCounts = dataset.reduce((acc, item) => {
-      acc[item.label] = (acc[item.label] || 0) + 1;
-      return acc;
-    }, {});
-    const datasetSize = Math.max(1, dataset.length);
-
-    const adjustedScores = Object.entries(algorithm34.labelScores).map(([label, score]) => {
-      const agreementBonus = label === model32Best.label ? 0.012 : 0; // tiny improvement 1: cross-model agreement bump
-      const neighborBonus = topNeighbors.reduce((bonus, neighbor, index) => {
-        if (neighbor.label !== label) return bonus;
-        return bonus + 0.01 / (index + 1);
-      }, 0); // tiny improvement 2: nearest-neighbor reinforcement
-      const frequencyPenalty = ((labelCounts[label] || 0) / datasetSize) * 0.01; // tiny improvement 3: light class-bias penalty
-
-      return [label, score + agreementBonus + neighborBonus - frequencyPenalty];
-    });
-
-    const ranked = adjustedScores.sort((a, b) => b[1] - a[1]);
-    const sharpenedProbabilities = softmax(ranked.map(([, score]) => score * 2.8));
-    const boostedConfidence = Math.round((sharpenedProbabilities[0] || 0) * 100);
-
-    return {
-      label: ranked[0]?.[0] || "unknown",
-      confidence: Math.max(1, Math.min(99, boostedConfidence)),
-    };
-  })();
-
-  const algorithm38 = (() => {
-    const normalizedInputFeatures38 = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
-    const topNeighbors = normalizedDistances.slice(0, Math.min(8, normalizedDistances.length));
-    const labelCounts = dataset.reduce((acc, item) => {
-      acc[item.label] = (acc[item.label] || 0) + 1;
-      return acc;
-    }, {});
-    const datasetSize = Math.max(1, dataset.length);
-
-    const scores = Object.entries(prototypesNormalized).map(([label, prototype]) => {
-      const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
-      const prototypeFeatures = extractLineFeaturesForSize(prototype, GRID_SIZE);
-      const lineDistance = featureDistance(normalizedInputFeatures38, prototypeFeatures);
-
-      const agreement21 = model21.label === label ? 0.1 : 0;
-      const agreement32 = model32Best.label === label ? 0.06 : 0;
-      const agreement37 = algorithm37.label === label ? 0.05 : 0;
-
-      const neighborVote = topNeighbors.reduce((sum, neighbor, index) => {
-        if (neighbor.label !== label) return sum;
-        return sum + 1 / (index + 1.5);
-      }, 0);
-
-      const densityGap = Math.abs((normalizedInputFeatures38[4] || 0) - (prototypeFeatures[4] || 0));
-      const centerGap =
-        Math.abs((normalizedInputFeatures38[5] || 0.5) - (prototypeFeatures[5] || 0.5)) +
-        Math.abs((normalizedInputFeatures38[6] || 0.5) - (prototypeFeatures[6] || 0.5));
-
-      const classPriorPenalty = (labelCounts[label] || 0) / datasetSize;
-
-      const energy =
-        prototypeDistance * 0.54 +
-        lineDistance * 0.26 +
-        densityGap * 0.1 +
-        centerGap * 0.08 +
-        classPriorPenalty * 0.05;
-
-      const score =
-        1 / Math.max(0.001, energy + 0.03) +
-        neighborVote * 0.18 +
-        agreement21 +
-        agreement32 +
-        agreement37;
-
-      return { label, score, energy };
-    });
-
-    const ranked = scores.sort((a, b) => b.score - a.score);
-    const probabilities = softmax(ranked.map((entry) => entry.score * 2.2));
-    const top = ranked[0] || { label: "unknown", energy: 1 };
-    const secondProb = probabilities[1] || 0;
-    const margin = (probabilities[0] || 0) - secondProb;
-    const calibratedConfidence = Math.round(
-      Math.max(1, Math.min(99, ((probabilities[0] || 0) * 0.72 + margin * 0.28) * 100 - top.energy * 9))
-    );
-
-    return {
-      label: top.label,
-      confidence: calibratedConfidence,
-    };
-  })();
 
   const datasetLabelCounts = dataset.reduce((acc, item) => {
     acc[item.label] = (acc[item.label] || 0) + 1;
     return acc;
   }, {});
   const datasetSize = Math.max(1, dataset.length);
-  const inputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
-  const prototypeFeaturesByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
-    acc[label] = extractLineFeaturesForSize(prototype, GRID_SIZE);
-    return acc;
-  }, {});
 
   const scoreAlgo7Variant = ({
     lineBlend = 0,
@@ -1496,43 +1372,19 @@ function runAlgorithms(vector, dataset) {
     };
   };
 
-  const algorithm7Variants = [
-    { id: 39, name: "Algorithm 39 (Dev: Alg7 + line blend)", ...scoreAlgo7Variant({ lineBlend: 0.16 }) },
-    { id: 40, name: "Algorithm 40 (Dev: Alg7 + density trim)", ...scoreAlgo7Variant({ densityWeight: 0.09 }) },
-    { id: 41, name: "Algorithm 41 (Dev: Alg7 + center trim)", ...scoreAlgo7Variant({ centerWeight: 0.06 }) },
-    { id: 42, name: "Algorithm 42 (Dev: Alg7 + line+density)", ...scoreAlgo7Variant({ lineBlend: 0.14, densityWeight: 0.08 }) },
-    { id: 43, name: "Algorithm 43 (Dev: Alg7 + line+center)", ...scoreAlgo7Variant({ lineBlend: 0.14, centerWeight: 0.05 }) },
-    { id: 44, name: "Algorithm 44 (Dev: Alg7 + density+center)", ...scoreAlgo7Variant({ densityWeight: 0.08, centerWeight: 0.05 }) },
-    { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", ...scoreAlgo7Variant({ neighborDepth: 4 }) },
-    { id: 46, name: "Algorithm 46 (Dev: Alg7 + 6NN support)", ...scoreAlgo7Variant({ neighborDepth: 6, temperature: 2.15 }) },
-    { id: 47, name: "Algorithm 47 (Dev: Alg7 + class-balance)", ...scoreAlgo7Variant({ balancePenalty: 0.05 }) },
-    { id: 48, name: "Algorithm 48 (Dev: Alg7 + line+balance)", ...scoreAlgo7Variant({ lineBlend: 0.12, balancePenalty: 0.05 }) },
-    { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", ...scoreAlgo7Variant({ centerWeight: 0.05, balancePenalty: 0.05 }) },
-    { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", ...scoreAlgo7Variant({ densityWeight: 0.08, neighborDepth: 4 }) },
-    { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", ...scoreAlgo7Variant({ lineBlend: 0.13, neighborDepth: 6 }) },
-    { id: 52, name: "Algorithm 52 (Dev: Alg45 + denser 4NN)", ...scoreAlgo7Variant({ neighborDepth: 4, densityWeight: 0.06, temperature: 2.05 }) },
-    { id: 53, name: "Algorithm 53 (Dev: Alg45 + balance guard)", ...scoreAlgo7Variant({ neighborDepth: 4, balancePenalty: 0.04, temperature: 2.1 }) },
-    { id: 54, name: "Algorithm 54 (Dev: Alg45 + center trim)", ...scoreAlgo7Variant({ neighborDepth: 4, centerWeight: 0.04, temperature: 2.05 }) },
-    { id: 55, name: "Algorithm 55 (Dev: Alg45 + line assist)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.1, temperature: 2.1 }) },
-    { id: 56, name: "Algorithm 56 (Dev: Alg45 + line+dense)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.08, densityWeight: 0.05, temperature: 2.1 }) },
-    { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 }) },
-    { id: 58, name: "Algorithm 58 (Dev: Alg45 + inverse-neighbor energy)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.32, densityWeight: 0.14, centerWeight: 0.1, balancePenalty: 0.09, temperature: 1.55 }) },
-  ];
+  const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
+  const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
+  const algorithm59 = scoreAlgorithm59(vector, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
-    { id: 21, name: "Algorithm 21 (v2 Transform + Line Blend kNN-17)", label: model21.label, confidence: model21.confidence },
-    { id: 32, name: "Algorithm 32 (Dev: Prototype + Line Shape Match)", label: model32Best.label, confidence: model32Confidence },
-    { id: 33, name: "Algorithm 33 (Dev: Alg21 + Line Shape Match)", label: model33Label, confidence: model33Confidence },
-    { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: algorithm34.label, confidence: algorithm34.confidence },
-    { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: model35.label, confidence: model35.confidence },
-    { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: algorithm36.label, confidence: algorithm36.confidence },
-    { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: algorithm37.label, confidence: algorithm37.confidence },
-    { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: algorithm38.label, confidence: algorithm38.confidence },
-    ...algorithm7Variants,
+    { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
+    { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
+    { id: 59, name: "Algorithm 59 (Dev: Alg57 + transform-grid 4NN)", label: algorithm59.label, confidence: algorithm59.confidence },
   ];
 }
+
 
 
 function App() {
@@ -1938,7 +1790,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 21, 32-38, and 39-51).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, and 59).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
