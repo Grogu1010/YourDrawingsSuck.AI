@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 63];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 63, 64];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1242,6 +1242,80 @@ function scoreAlgo63(input16, dataset16, options = {}) {
   return voteByInverseDistance(scored, k);
 }
 
+function scoreAlgo64(input16, dataset16, options = {}) {
+  const {
+    radialBins = 8,
+    angleBins = 16,
+    topLabels = 8,
+    k = 19,
+    distanceFloor = 0.01,
+  } = options;
+
+  const inputTransforms = generateTransformVariantsForSize(input16, GRID_SIZE);
+  const inputDescriptors = inputTransforms.map((variant) => buildRaesDescriptor(variant, GRID_SIZE, radialBins, angleBins));
+  const descriptors = dataset16.map((item) => ({
+    label: item.label,
+    desc: buildRaesDescriptor(item.vector, GRID_SIZE, radialBins, angleBins),
+  }));
+
+  const grouped = descriptors.reduce((acc, item) => {
+    if (!acc[item.label]) {
+      acc[item.label] = {
+        count: 0,
+        hist: new Array(radialBins * angleBins).fill(0),
+        inkDensity: 0,
+      };
+    }
+    acc[item.label].count += 1;
+    acc[item.label].inkDensity += item.desc.inkDensity;
+    for (let i = 0; i < acc[item.label].hist.length; i += 1) {
+      acc[item.label].hist[i] += item.desc.hist[i];
+    }
+    return acc;
+  }, {});
+
+  const prototypeRanked = Object.entries(grouped)
+    .map(([label, proto]) => {
+      const count = Math.max(1, proto.count);
+      const hist = proto.hist.map((value) => value / count);
+      const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+      const prototypeDesc = {
+        hist: hist.map((value) => value / Math.max(norm, 1e-6)),
+        radialBins,
+        angleBins,
+        inkDensity: proto.inkDensity / count,
+      };
+
+      const bestDistance = inputDescriptors.reduce(
+        (best, inputDesc) => Math.min(best, raesInvariantDistance(inputDesc, prototypeDesc)),
+        Number.POSITIVE_INFINITY
+      );
+
+      return {
+        label,
+        distance: bestDistance,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const candidateLabels = new Set(prototypeRanked.slice(0, Math.min(topLabels, prototypeRanked.length)).map((entry) => entry.label));
+  const scored = descriptors
+    .filter((item) => candidateLabels.has(item.label))
+    .map((item) => {
+      const bestDistance = inputDescriptors.reduce(
+        (best, inputDesc) => Math.min(best, raesInvariantDistance(inputDesc, item.desc)),
+        Number.POSITIVE_INFINITY
+      );
+      return {
+        label: item.label,
+        distance: Math.max(distanceFloor, bestDistance),
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  return voteByInverseDistance(scored, k);
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -1423,6 +1497,7 @@ function runAlgorithms(vector, dataset) {
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
       { id: 63, name: "Algorithm 63 (Dev: RAES log-polar signature)", label: "Need training data first", confidence: 0 },
+      { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1518,6 +1593,7 @@ function runAlgorithms(vector, dataset) {
   const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
   const algorithm63 = scoreAlgo63(normalizedInput, dataset);
+  const algorithm64 = scoreAlgo64(normalizedInput, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -1525,6 +1601,7 @@ function runAlgorithms(vector, dataset) {
     { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
     { id: 63, name: "Algorithm 63 (Dev: RAES log-polar signature)", label: algorithm63.label, confidence: algorithm63.confidence },
+    { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
   ];
 }
 
@@ -1933,7 +2010,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, and 63).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 63, and 64).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
