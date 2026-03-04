@@ -1242,6 +1242,32 @@ function scoreAlgo63(input16, dataset16, options = {}) {
   return voteByInverseDistance(scored, k);
 }
 
+function buildTransformAveragedRaesDescriptor(vector, options = {}) {
+  const { radialBins = 8, angleBins = 16 } = options;
+  const variants = generateTransformVariantsForSize(vector, GRID_SIZE);
+  const accumulatedHist = new Array(radialBins * angleBins).fill(0);
+  let accumulatedInk = 0;
+
+  variants.forEach((variant) => {
+    const desc = buildRaesDescriptor(variant, GRID_SIZE, radialBins, angleBins);
+    accumulatedInk += desc.inkDensity;
+    for (let i = 0; i < accumulatedHist.length; i += 1) {
+      accumulatedHist[i] += desc.hist[i];
+    }
+  });
+
+  const count = Math.max(1, variants.length);
+  const averagedHist = accumulatedHist.map((value) => value / count);
+  const norm = Math.sqrt(averagedHist.reduce((sum, value) => sum + value * value, 0));
+
+  return {
+    hist: averagedHist.map((value) => value / Math.max(norm, 1e-6)),
+    radialBins,
+    angleBins,
+    inkDensity: accumulatedInk / count,
+  };
+}
+
 function scoreAlgo64(input16, dataset16, options = {}) {
   const {
     radialBins = 8,
@@ -1251,6 +1277,17 @@ function scoreAlgo64(input16, dataset16, options = {}) {
     distanceFloor = 0.01,
   } = options;
 
+  const inputDesc = buildTransformAveragedRaesDescriptor(input16, { radialBins, angleBins });
+  const descriptors = dataset16.map((item) => ({
+    label: item.label,
+    desc: buildTransformAveragedRaesDescriptor(item.vector, { radialBins, angleBins }),
+  }));
+
+  const scored = descriptors
+    .map((item) => ({
+      label: item.label,
+      distance: Math.max(distanceFloor, raesInvariantDistance(inputDesc, item.desc)),
+    }))
   const inputTransforms = generateTransformVariantsForSize(input16, GRID_SIZE);
   const inputDescriptors = inputTransforms.map((variant) => buildRaesDescriptor(variant, GRID_SIZE, radialBins, angleBins));
   const descriptors = dataset16.map((item) => ({
