@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1192,6 +1192,13 @@ function runAlgorithms(vector, dataset) {
       { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", label: "Need training data first", confidence: 0 },
       { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", label: "Need training data first", confidence: 0 },
       { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", label: "Need training data first", confidence: 0 },
+      { id: 52, name: "Algorithm 52 (Dev: Alg45 + denser 4NN)", label: "Need training data first", confidence: 0 },
+      { id: 53, name: "Algorithm 53 (Dev: Alg45 + balance guard)", label: "Need training data first", confidence: 0 },
+      { id: 54, name: "Algorithm 54 (Dev: Alg45 + center trim)", label: "Need training data first", confidence: 0 },
+      { id: 55, name: "Algorithm 55 (Dev: Alg45 + line assist)", label: "Need training data first", confidence: 0 },
+      { id: 56, name: "Algorithm 56 (Dev: Alg45 + line+dense)", label: "Need training data first", confidence: 0 },
+      { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
+      { id: 58, name: "Algorithm 58 (Dev: Alg45 + inverse-neighbor energy)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1503,6 +1510,13 @@ function runAlgorithms(vector, dataset) {
     { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", ...scoreAlgo7Variant({ centerWeight: 0.05, balancePenalty: 0.05 }) },
     { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", ...scoreAlgo7Variant({ densityWeight: 0.08, neighborDepth: 4 }) },
     { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", ...scoreAlgo7Variant({ lineBlend: 0.13, neighborDepth: 6 }) },
+    { id: 52, name: "Algorithm 52 (Dev: Alg45 + denser 4NN)", ...scoreAlgo7Variant({ neighborDepth: 4, densityWeight: 0.06, temperature: 2.05 }) },
+    { id: 53, name: "Algorithm 53 (Dev: Alg45 + balance guard)", ...scoreAlgo7Variant({ neighborDepth: 4, balancePenalty: 0.04, temperature: 2.1 }) },
+    { id: 54, name: "Algorithm 54 (Dev: Alg45 + center trim)", ...scoreAlgo7Variant({ neighborDepth: 4, centerWeight: 0.04, temperature: 2.05 }) },
+    { id: 55, name: "Algorithm 55 (Dev: Alg45 + line assist)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.1, temperature: 2.1 }) },
+    { id: 56, name: "Algorithm 56 (Dev: Alg45 + line+dense)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.08, densityWeight: 0.05, temperature: 2.1 }) },
+    { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 }) },
+    { id: 58, name: "Algorithm 58 (Dev: Alg45 + inverse-neighbor energy)", ...scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.32, densityWeight: 0.14, centerWeight: 0.1, balancePenalty: 0.09, temperature: 1.55 }) },
   ];
 
   return [
