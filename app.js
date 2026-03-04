@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 59];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1186,178 +1186,6 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
   return { hyperDraw, hyperDrawV2 };
 }
 
-function getTransformOffsets() {
-  const center = (GRID_SIZE - 1) / 2;
-  const targets = [0.25, 0.5, 0.75].map((ratio) => (GRID_SIZE - 1) * ratio);
-  return targets.flatMap((y) => targets.map((x) => ({ x: x - center, y: y - center })));
-}
-
-function getCoarseTransformOffsets() {
-  const center = (GRID_SIZE - 1) / 2;
-  const coarseTargets = [
-    { xRatio: 0.5, yRatio: 0.5 },
-    { xRatio: 1 / 6, yRatio: 1 / 4 },
-    { xRatio: 3 / 6, yRatio: 1 / 4 },
-    { xRatio: 5 / 6, yRatio: 1 / 4 },
-    { xRatio: 1 / 6, yRatio: 3 / 4 },
-    { xRatio: 3 / 6, yRatio: 3 / 4 },
-    { xRatio: 5 / 6, yRatio: 3 / 4 },
-  ];
-
-  return coarseTargets.map((target) => ({
-    x: (GRID_SIZE - 1) * target.xRatio - center,
-    y: (GRID_SIZE - 1) * target.yRatio - center,
-  }));
-}
-
-function getActivePoints(vector) {
-  const activePoints = [];
-  for (let y = 0; y < GRID_SIZE; y += 1) {
-    for (let x = 0; x < GRID_SIZE; x += 1) {
-      const value = vector[y * GRID_SIZE + x];
-      if (value > 0.05) activePoints.push({ x, y, value });
-    }
-  }
-  return activePoints;
-}
-
-function* buildAlg59VariantsCoarse(baseVector) {
-  const offsets = getCoarseTransformOffsets();
-  const scales = [0.5, 1, 1.5];
-  const rotations = [0, 45, 90, 135, 180, 225, 270, 315];
-  const flips = [
-    { horizontal: false, vertical: false },
-    { horizontal: true, vertical: false },
-  ];
-  if (!baseVector) return;
-
-  for (const offset of offsets) {
-    for (const scale of scales) {
-      for (const rotationDeg of rotations) {
-        for (const flip of flips) {
-          yield { offset, scale, rotationDeg, flip };
-        }
-      }
-    }
-  }
-}
-
-function computeBestDistanceToTransformedSample(inputNorm, sampleNorm, config) {
-  const activePoints = getActivePoints(sampleNorm);
-  const normFactor = Math.sqrt(inputNorm.length);
-
-  if (!activePoints.length) {
-    return distance(inputNorm, sampleNorm) / normFactor;
-  }
-
-  const center = (GRID_SIZE - 1) / 2;
-  const scratch = new Array(GRID_SIZE * GRID_SIZE).fill(0);
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  const applyTransforms = config.coarse
-    ? buildAlg59VariantsCoarse(sampleNorm)
-    : (function* buildFullGridTransforms() {
-        for (const offset of config.offsets) {
-          for (const scale of config.scales) {
-            for (const rotationDeg of config.rotations) {
-              for (const flip of config.flips) {
-                yield { offset, scale, rotationDeg, flip };
-              }
-            }
-          }
-        }
-      })();
-
-  for (const transform of applyTransforms) {
-    scratch.fill(0);
-
-    const radians = (transform.rotationDeg * Math.PI) / 180;
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-
-    for (const point of activePoints) {
-      let dx = point.x - center;
-      let dy = point.y - center;
-
-      if (transform.flip.horizontal) dx = -dx;
-      if (transform.flip.vertical) dy = -dy;
-
-      dx *= transform.scale;
-      dy *= transform.scale;
-
-      const rx = dx * cos - dy * sin;
-      const ry = dx * sin + dy * cos;
-
-      const nx = Math.round(rx + center + transform.offset.x);
-      const ny = Math.round(ry + center + transform.offset.y);
-      if (nx < 0 || ny < 0 || nx >= GRID_SIZE || ny >= GRID_SIZE) continue;
-
-      const idx = ny * GRID_SIZE + nx;
-      if (point.value > scratch[idx]) scratch[idx] = point.value;
-    }
-
-    const d = distance(inputNorm, scratch) / normFactor;
-    if (d < bestDistance) bestDistance = d;
-  }
-
-  return bestDistance;
-}
-
-function scoreAlgorithm59(inputVector, dataset) {
-  const inputNorm = normalizeVector(inputVector);
-
-  const fineConfig = {
-    coarse: false,
-    offsets: getTransformOffsets(),
-    scales: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75],
-    rotations: Array.from({ length: 24 }, (_, index) => index * 15),
-    flips: [
-      { horizontal: false, vertical: false },
-      { horizontal: true, vertical: false },
-      { horizontal: false, vertical: true },
-    ],
-  };
-
-  const coarseRanked = dataset
-    .map((item, index) => {
-      const sampleNorm = normalizeVector(item.vector);
-      const coarseDistance = computeBestDistanceToTransformedSample(inputNorm, sampleNorm, { coarse: true });
-
-      return {
-        datasetIndex: index,
-        label: item.label,
-        sampleNorm,
-        coarseDistance,
-      };
-    })
-    .sort((a, b) => a.coarseDistance - b.coarseDistance);
-
-  const candidateCount = Math.max(1, Math.floor(dataset.length * 0.05));
-  const candidates = coarseRanked.slice(0, candidateCount);
-
-  const fineScored = candidates
-    .map((candidate) => ({
-      datasetIndex: candidate.datasetIndex,
-      label: candidate.label,
-      distance: computeBestDistanceToTransformedSample(inputNorm, candidate.sampleNorm, fineConfig),
-    }))
-    .sort((a, b) => a.distance - b.distance);
-
-  const topUniqueDrawings = fineScored.slice(0, Math.min(4, fineScored.length));
-  const vote = voteByInverseDistance(
-    topUniqueDrawings.map((entry) => ({
-      label: entry.label,
-      distance: Math.max(0.02, entry.distance),
-    })),
-    4
-  );
-
-  return {
-    label: vote.label,
-    confidence: vote.confidence,
-  };
-}
-
 function runAlgorithms(vector, dataset) {
   if (!dataset.length) {
     return [
@@ -1365,7 +1193,6 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
-      { id: 59, name: "Algorithm 59 (Dev: Alg57 + transform-grid 4NN)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1460,14 +1287,11 @@ function runAlgorithms(vector, dataset) {
 
   const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
-  const algorithm59 = scoreAlgorithm59(vector, dataset);
-
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
-    { id: 59, name: "Algorithm 59 (Dev: Alg57 + transform-grid 4NN)", label: algorithm59.label, confidence: algorithm59.confidence },
   ];
 }
 
@@ -1876,7 +1700,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, and 59).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, and 57).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
