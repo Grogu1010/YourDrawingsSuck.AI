@@ -16,7 +16,6 @@ const GRID_SIZE = 16;
 const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 59];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
-const GRID_SIZE_V3 = 32;
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -65,14 +64,35 @@ function loadDataset() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
+    const downscale32To16 = (vector) => {
+      if (!Array.isArray(vector) || vector.length !== 32 * 32) return vector;
+      const output = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+      for (let y = 0; y < GRID_SIZE; y += 1) {
+        for (let x = 0; x < GRID_SIZE; x += 1) {
+          let sum = 0;
+          for (let oy = 0; oy < 2; oy += 1) {
+            for (let ox = 0; ox < 2; ox += 1) {
+              const sourceX = x * 2 + ox;
+              const sourceY = y * 2 + oy;
+              sum += vector[sourceY * 32 + sourceX] || 0;
+            }
+          }
+          output[y * GRID_SIZE + x] = sum / 4;
+        }
+      }
+      return output;
+    };
+
     return parsed.filter(
       (item) =>
         item &&
         typeof item.label === "string" &&
         Array.isArray(item.vector) &&
-        item.vector.length === GRID_SIZE * GRID_SIZE &&
         typeof item.ts === "number"
-    );
+    ).map((item) => ({
+      ...item,
+      vector: downscale32To16(item.vector),
+    })).filter((item) => item.vector.length === GRID_SIZE * GRID_SIZE);
   } catch {
     return [];
   }
@@ -534,7 +554,7 @@ function sampleBilinear(vector, size, x, y) {
   return top * (1 - ty) + bottom * ty;
 }
 
-function canonicalizeByMoments(vector, size = 32, r0 = 9) {
+function canonicalizeByMoments(vector, size = GRID_SIZE, r0 = 9) {
   let m00 = 0;
   let xSum = 0;
   let ySum = 0;
@@ -742,13 +762,13 @@ function buildAlgo28VariantFeatures(baseCanonical, size) {
   });
 }
 
-function scoreAlgo28(input, dataset32, options = {}) {
+function scoreAlgo28(input, dataset16, options = {}) {
   const { k = 21, distanceFloor = 0.01, targetRadius = 9 } = options;
-  const size = GRID_SIZE_V3;
+  const size = GRID_SIZE;
   const inputCanonical = canonicalizeByMoments(input, size, targetRadius);
   const inputVariants = buildAlgo28VariantFeatures(inputCanonical, size);
 
-  const scored = dataset32.map((item) => {
+  const scored = dataset16.map((item) => {
     const sampleCanonical = canonicalizeByMoments(item.vector, size, targetRadius);
     const sampleVariants = buildAlgo28VariantFeatures(sampleCanonical, size);
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -856,14 +876,14 @@ function extractInvariantShapeDescriptor(vector, size) {
   return [occupancy, ...radialBins, ...hu];
 }
 
-function scoreAlgo29(input, dataset32, options = {}) {
+function scoreAlgo29(input, dataset16, options = {}) {
   const { k = 27, distanceFloor = 0.008 } = options;
-  const inputDescriptor = extractInvariantShapeDescriptor(input, GRID_SIZE_V3);
+  const inputDescriptor = extractInvariantShapeDescriptor(input, GRID_SIZE);
 
-  const scored = dataset32
+  const scored = dataset16
     .map((item) => ({
       label: item.label,
-      distance: featureDistance(inputDescriptor, extractInvariantShapeDescriptor(item.vector, GRID_SIZE_V3)),
+      distance: featureDistance(inputDescriptor, extractInvariantShapeDescriptor(item.vector, GRID_SIZE)),
     }))
     .sort((a, b) => a.distance - b.distance);
 
@@ -876,10 +896,10 @@ function scoreAlgo29(input, dataset32, options = {}) {
   );
 }
 
-function scoreAlgo30(input16, input32, dataset16, dataset32) {
+function scoreAlgo30(input16, dataset16) {
   const candidates = [
     {
-      ...scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+      ...scoreTransformInvariantModelForSize(input16, dataset16, GRID_SIZE, {
         k: 35,
         distanceFloor: 0.005,
         featureWeight: 0.34,
@@ -888,7 +908,7 @@ function scoreAlgo30(input16, input32, dataset16, dataset32) {
       weight: 1.35,
     },
     {
-      ...scoreAlgo28(input32, dataset32, {
+      ...scoreAlgo28(input16, dataset16, {
         k: 33,
         distanceFloor: 0.007,
         targetRadius: 9,
@@ -896,7 +916,7 @@ function scoreAlgo30(input16, input32, dataset16, dataset32) {
       weight: 1.2,
     },
     {
-      ...scoreAlgo29(input32, dataset32, {
+      ...scoreAlgo29(input16, dataset16, {
         k: 35,
         distanceFloor: 0.007,
       }),
@@ -928,14 +948,14 @@ function scoreAlgo30(input16, input32, dataset16, dataset32) {
   };
 }
 
-function scoreAlgo31(input16, input32, dataset16, dataset32) {
+function scoreAlgo31(input16, dataset16) {
   const experts = [
     {
-      ...scoreAlgo30(input16, input32, dataset16, dataset32),
+      ...scoreAlgo30(input16, dataset16),
       weight: 1.55,
     },
     {
-      ...scoreTransformInvariantModelForSize(input32, dataset32, GRID_SIZE_V3, {
+      ...scoreTransformInvariantModelForSize(input16, dataset16, GRID_SIZE, {
         k: 39,
         distanceFloor: 0.004,
         featureWeight: 0.38,
@@ -944,7 +964,7 @@ function scoreAlgo31(input16, input32, dataset16, dataset32) {
       weight: 1.35,
     },
     {
-      ...scoreAlgo28(input32, dataset32, {
+      ...scoreAlgo28(input16, dataset16, {
         k: 37,
         distanceFloor: 0.006,
         targetRadius: 9,
@@ -952,7 +972,7 @@ function scoreAlgo31(input16, input32, dataset16, dataset32) {
       weight: 1.2,
     },
     {
-      ...scoreAlgo29(input32, dataset32, {
+      ...scoreAlgo29(input16, dataset16, {
         k: 39,
         distanceFloor: 0.006,
       }),
