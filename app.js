@@ -14,7 +14,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1378,6 +1378,148 @@ function scoreAlgo65(input16, dataset16, options = {}) {
   };
 }
 
+function scoreAlgo66(input16, dataset16, options = {}) {
+  const {
+    rotationSteps = 24,
+    k = 25,
+    topLabels = 10,
+    distanceFloor = 0.008,
+    lineBlend = 0.2,
+    descriptorBlend = 0.28,
+    neighborBonus = 0.08,
+    temperature = 2.65,
+  } = options;
+
+  const inputNormalized = normalizeVector(input16);
+  const generateDenseCandidates = (vector) => {
+    const horizontalFlip = flipVectorHorizontal(vector);
+    const verticalFlip = rotateVector90(rotateVector90(horizontalFlip));
+    const flipModes = [vector, horizontalFlip, verticalFlip];
+    const candidates = [];
+
+    flipModes.forEach((base) => {
+      for (let step = 0; step < rotationSteps; step += 1) {
+        const angle = (2 * Math.PI * step) / Math.max(1, rotationSteps);
+        candidates.push(transformVector(base, { angle }));
+      }
+    });
+
+    return candidates;
+  };
+
+  const inputCandidates = generateDenseCandidates(inputNormalized);
+
+  const grouped = dataset16.reduce((acc, item) => {
+    if (!acc[item.label]) acc[item.label] = [];
+    acc[item.label].push(item.vector);
+    return acc;
+  }, {});
+
+  const labelPrototypes = Object.entries(grouped).map(([label, vectors]) => {
+    const proto = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+    vectors.forEach((vector) => {
+      const norm = normalizeVector(vector);
+      for (let i = 0; i < proto.length; i += 1) {
+        proto[i] += norm[i] || 0;
+      }
+    });
+
+    for (let i = 0; i < proto.length; i += 1) {
+      proto[i] /= Math.max(1, vectors.length);
+    }
+
+    return {
+      label,
+      vector: proto,
+      features: extractLineFeaturesForSize(proto, GRID_SIZE),
+      descriptor: extractInvariantShapeDescriptor(proto, GRID_SIZE),
+    };
+  });
+
+  const labelRanked = labelPrototypes
+    .map((prototype) => {
+      const bestDistance = inputCandidates.reduce((best, candidate) => {
+        const pixelDistance = distance(candidate, prototype.vector) / Math.sqrt(candidate.length);
+        const lineDistance = featureDistance(
+          extractLineFeaturesForSize(candidate, GRID_SIZE),
+          prototype.features
+        );
+        const descriptorDistance = featureDistance(
+          extractInvariantShapeDescriptor(candidate, GRID_SIZE),
+          prototype.descriptor
+        );
+
+        const blendedDistance =
+          pixelDistance * (1 - lineBlend - descriptorBlend) +
+          lineDistance * lineBlend +
+          descriptorDistance * descriptorBlend;
+
+        return Math.min(best, blendedDistance);
+      }, Number.POSITIVE_INFINITY);
+
+      return {
+        label: prototype.label,
+        distance: Math.max(distanceFloor, bestDistance),
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const candidateLabels = new Set(labelRanked.slice(0, Math.min(topLabels, labelRanked.length)).map((item) => item.label));
+
+  const scoredSamples = dataset16
+    .filter((item) => candidateLabels.has(item.label))
+    .map((item) => {
+      const sample = normalizeVector(item.vector);
+      const sampleFeatures = extractLineFeaturesForSize(sample, GRID_SIZE);
+      const sampleDescriptor = extractInvariantShapeDescriptor(sample, GRID_SIZE);
+
+      const bestDistance = inputCandidates.reduce((best, candidate) => {
+        const pixelDistance = distance(candidate, sample) / Math.sqrt(candidate.length);
+        const lineDistance = featureDistance(extractLineFeaturesForSize(candidate, GRID_SIZE), sampleFeatures);
+        const descriptorDistance = featureDistance(
+          extractInvariantShapeDescriptor(candidate, GRID_SIZE),
+          sampleDescriptor
+        );
+        const blendedDistance =
+          pixelDistance * (1 - lineBlend - descriptorBlend) +
+          lineDistance * lineBlend +
+          descriptorDistance * descriptorBlend;
+
+        return Math.min(best, blendedDistance);
+      }, Number.POSITIVE_INFINITY);
+
+      return {
+        label: item.label,
+        distance: Math.max(distanceFloor, bestDistance),
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const withPrototypeSupport = scoredSamples.map((entry) => {
+    const prototypeIndex = labelRanked.findIndex((item) => item.label === entry.label);
+    const prototypeBoost = prototypeIndex >= 0 ? neighborBonus / (prototypeIndex + 1) : 0;
+    return {
+      ...entry,
+      distance: Math.max(distanceFloor, entry.distance - prototypeBoost),
+    };
+  });
+
+  const vote = voteByInverseDistance(withPrototypeSupport, k);
+  const scoreByLabel = withPrototypeSupport.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1 / Math.max(item.distance, distanceFloor);
+    return acc;
+  }, {});
+  const rankedScores = Object.entries(scoreByLabel).sort((a, b) => b[1] - a[1]);
+  const probabilities = softmax(rankedScores.map(([, score]) => score * temperature));
+  const winnerIndex = rankedScores.findIndex(([label]) => label === vote.label);
+  const calibratedConfidence = Math.round((probabilities[winnerIndex >= 0 ? winnerIndex : 0] || 0) * 100);
+
+  return {
+    label: vote.label,
+    confidence: Math.max(vote.confidence, calibratedConfidence),
+  };
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -1560,6 +1702,7 @@ function runAlgorithms(vector, dataset) {
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
       { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
       { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
+      { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1656,6 +1799,7 @@ function runAlgorithms(vector, dataset) {
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
   const algorithm64 = scoreAlgo64(normalizedInput, dataset);
   const algorithm65 = scoreAlgo65(normalizedInput, dataset);
+  const algorithm66 = scoreAlgo66(normalizedInput, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -1664,6 +1808,7 @@ function runAlgorithms(vector, dataset) {
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
     { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
     { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
+    { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
   ];
 }
 
@@ -2072,7 +2217,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, and 64).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, and 66).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
