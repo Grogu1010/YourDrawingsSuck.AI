@@ -201,3 +201,20 @@ select {
   line-height: 1.55;
   margin: 0.9rem 0;
 }
+
+input {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 0.5rem 0.6rem;
+  background: #0b1220;
+  color: #f9fafb;
+}
+
+.sync-card {
+  margin-bottom: 0.8rem;
+}
+
+.sync-status {
+  color: #c7f9e5;
+  font-weight: 600;
+}

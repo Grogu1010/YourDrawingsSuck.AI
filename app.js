@@ -9,14 +9,17 @@ const OBJECTS = [
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
+const PENDING_SYNC_STORAGE_KEY = "yourdrawingssuckai.pendingSync.v1";
+const USERNAME_STORAGE_KEY = "yourdrawingssuckai.username.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
+const SERVER_BASE_URL = "https://yourdrawingssuck-server.onrender.com";
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -101,6 +104,100 @@ function loadDataset() {
 
 function saveDataset(dataset) {
   setStorageItem(STORAGE_KEY, JSON.stringify(dataset));
+}
+
+
+function loadPendingSync() {
+  try {
+    const raw = getStorageItem(PENDING_SYNC_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) =>
+      item &&
+      typeof item.label === "string" &&
+      Array.isArray(item.vector) &&
+      item.vector.length === GRID_SIZE * GRID_SIZE &&
+      typeof item.ts === "number"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePendingSync(items) {
+  setStorageItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(items.slice(-3000)));
+}
+
+function loadSavedUsername() {
+  return getStorageItem(USERNAME_STORAGE_KEY) || "";
+}
+
+function saveUsername(name) {
+  if (!name) return;
+  setStorageItem(USERNAME_STORAGE_KEY, name);
+}
+
+function drawingSignature(item) {
+  return `${item.label}|${item.ts}|${item.vector.join(",")}`;
+}
+
+function mergeUniqueDrawings(base, incoming) {
+  const seen = new Set(base.map(drawingSignature));
+  const merged = [...base];
+  incoming.forEach((item) => {
+    const sig = drawingSignature(item);
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    merged.push(item);
+  });
+  return merged.slice(-2500);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchServerDrawings() {
+  const response = await fetchWithTimeout(`${SERVER_BASE_URL}/api/drawings`, {}, 3500);
+  if (!response.ok) throw new Error("server fetch failed");
+  const parsed = await response.json();
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((item) =>
+    item &&
+    typeof item.label === "string" &&
+    Array.isArray(item.vector) &&
+    item.vector.length === GRID_SIZE * GRID_SIZE &&
+    typeof item.ts === "number"
+  );
+}
+
+async function pushDrawingToServer(drawing, username) {
+  const payload = {
+    label: drawing.label,
+    vector: drawing.vector,
+    ts: drawing.ts,
+    username,
+  };
+
+  const response = await fetchWithTimeout(
+    `${SERVER_BASE_URL}/api/drawings`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    3500
+  );
+
+  if (!response.ok) throw new Error("server save failed");
 }
 
 function createDefaultAlgorithmStats() {
@@ -2108,19 +2205,6 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
-      { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
-      { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
-      { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
-      { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: "Need training data first", confidence: 0 },
-      { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: "Need training data first", confidence: 0 },
-      { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: "Need training data first", confidence: 0 },
-      { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: "Need training data first", confidence: 0 },
-      { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: "Need training data first", confidence: 0 },
-      { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: "Need training data first", confidence: 0 },
-      { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: "Need training data first", confidence: 0 },
-      { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: "Need training data first", confidence: 0 },
-      { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: "Need training data first", confidence: 0 },
-      { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2161,20 +2245,7 @@ function runAlgorithms(vector, dataset) {
     return acc;
   }, {});
 
-  const datasetLabelCounts = dataset.reduce((acc, item) => {
-    acc[item.label] = (acc[item.label] || 0) + 1;
-    return acc;
-  }, {});
-  const datasetSize = Math.max(1, dataset.length);
-
-  const scoreAlgo7Variant = ({
-    lineBlend = 0,
-    densityWeight = 0,
-    centerWeight = 0,
-    neighborDepth = 0,
-    balancePenalty = 0,
-    temperature = 2,
-  }) => {
+  const scoreAlgo7Variant = ({ lineBlend = 0, densityWeight = 0, centerWeight = 0, neighborDepth = 0, temperature = 2 }) => {
     const topNeighbors = normalizedDistances.slice(0, Math.min(neighborDepth, normalizedDistances.length));
     const ranked = Object.entries(prototypesNormalized)
       .map(([label, prototype]) => {
@@ -2197,12 +2268,8 @@ function runAlgorithms(vector, dataset) {
           if (neighbor.label !== label) return bonus;
           return bonus + 0.05 / (index + 1);
         }, 0);
-        const priorPenalty = ((datasetLabelCounts[label] || 0) / datasetSize) * balancePenalty;
 
-        return {
-          label,
-          score: baseScore + neighborScore - priorPenalty,
-        };
+        return { label, score: baseScore + neighborScore };
       })
       .sort((a, b) => b.score - a.score);
 
@@ -2215,38 +2282,12 @@ function runAlgorithms(vector, dataset) {
 
   const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
-  const algorithm64 = scoreAlgo64(normalizedInput, dataset);
-  const algorithm65 = scoreAlgo65(normalizedInput, dataset);
-  const algorithm66 = scoreAlgo66(normalizedInput, dataset);
-  const algorithm67 = scoreAlgo67(normalizedInput, dataset);
-  const algorithm68 = scoreAlgo68(normalizedInput, dataset);
-  const algorithm69 = scoreAlgo69(normalizedInput, dataset);
-  const algorithm70 = scoreAlgo70(normalizedInput, dataset);
-  const algorithm71 = scoreAlgo71(normalizedInput, dataset);
-  const algorithm72 = scoreAlgo72(normalizedInput, dataset);
-  const algorithm73 = scoreAlgo73(normalizedInput, dataset);
-  const algorithm74 = scoreAlgo74(normalizedInput, dataset);
-  const algorithm75 = scoreAlgo75(normalizedInput, dataset);
-  const algorithm76 = scoreAlgo76(normalizedInput, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
-    { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
-    { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
-    { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
-    { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: algorithm67.label, confidence: algorithm67.confidence },
-    { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: algorithm68.label, confidence: algorithm68.confidence },
-    { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: algorithm69.label, confidence: algorithm69.confidence },
-    { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: algorithm70.label, confidence: algorithm70.confidence },
-    { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: algorithm71.label, confidence: algorithm71.confidence },
-    { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: algorithm72.label, confidence: algorithm72.confidence },
-    { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: algorithm73.label, confidence: algorithm73.confidence },
-    { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: algorithm74.label, confidence: algorithm74.confidence },
-    { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: algorithm75.label, confidence: algorithm75.confidence },
-    { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: algorithm76.label, confidence: algorithm76.confidence },
   ];
 }
 
@@ -2262,6 +2303,8 @@ function App() {
   const drawingRevisionRef = useRef(0);
   const lastGuessedRevisionRef = useRef(-1);
   const guessTimeoutRef = useRef(null);
+  const syncingRef = useRef(false);
+  const pendingSyncRef = useRef([]);
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
@@ -2277,6 +2320,10 @@ function App() {
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const [activeTab, setActiveTab] = useState("draw");
+  const [usernameInput, setUsernameInput] = useState(() => loadSavedUsername());
+  const [username, setUsername] = useState(() => loadSavedUsername());
+  const [pendingSync, setPendingSync] = useState(() => loadPendingSync());
+  const [serverStatus, setServerStatus] = useState("offline");
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
@@ -2290,6 +2337,55 @@ function App() {
   useEffect(() => {
     saveCompareStats(compareStats);
   }, [compareStats]);
+
+
+  useEffect(() => {
+    pendingSyncRef.current = pendingSync;
+    savePendingSync(pendingSync);
+  }, [pendingSync]);
+
+  useEffect(() => {
+    saveDataset(dataset);
+  }, [dataset]);
+
+  useEffect(() => {
+    if (!username) return;
+    saveUsername(username);
+  }, [username]);
+
+  useEffect(() => {
+    if (!username) return undefined;
+
+    const syncNow = async () => {
+      if (syncingRef.current) return;
+      syncingRef.current = true;
+      try {
+        const serverDrawings = await fetchServerDrawings();
+        setServerStatus("online");
+        setDataset((previous) => mergeUniqueDrawings(previous, serverDrawings));
+
+        if (pendingSyncRef.current.length) {
+          const remaining = [];
+          for (const drawing of pendingSyncRef.current) {
+            try {
+              await pushDrawingToServer(drawing, username);
+            } catch {
+              remaining.push(drawing);
+            }
+          }
+          setPendingSync(remaining);
+        }
+      } catch {
+        setServerStatus("offline");
+      } finally {
+        syncingRef.current = false;
+      }
+    };
+
+    syncNow();
+    const interval = setInterval(syncNow, 7000);
+    return () => clearInterval(interval);
+  }, [username]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2545,12 +2641,16 @@ function App() {
       return next;
     });
 
-    const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
-    setDataset(updated);
-    saveDataset(updated);
+    const savedDrawing = { label: prompt, vector: vec, ts: Date.now() };
+    setDataset((previous) => mergeUniqueDrawings(previous, [savedDrawing]));
+    setPendingSync((previous) => [...previous, savedDrawing]);
     setPrompt(randomPrompt());
     clearCanvas();
-    setStatusMessage("Done! Added to dataset and moved to the next prompt.");
+    if (serverStatus === "online" && username) {
+      setStatusMessage("Done! Saved locally and queued for server/community sync.");
+    } else {
+      setStatusMessage("Done! Saved locally. It will auto-sync to the server when available.");
+    }
   };
 
   const promptCounts = useMemo(
@@ -2566,6 +2666,37 @@ function App() {
     <main className="app">
       <h1>YourDrawingsSuck.AI</h1>
       <p className="subtitle">Get a random object, draw it, and let our hilariously judgy AI guess from community sketches.</p>
+      <section className="card sync-card">
+        {!username ? (
+          <div className="row">
+            <input
+              value={usernameInput}
+              onChange={(event) => setUsernameInput(event.target.value)}
+              placeholder="Pick a username"
+            />
+            <button
+              className="primary"
+              onClick={() => {
+                const next = usernameInput.trim().slice(0, 24);
+                if (!next) {
+                  setStatusMessage("Please enter a username to enable cloud sync.");
+                  return;
+                }
+                setUsernameInput(next);
+                setUsername(next);
+                setStatusMessage("Logged in. Local drawings will auto-sync when server is reachable.");
+              }}
+            >
+              Log in for community sync
+            </button>
+          </div>
+        ) : (
+          <div className="sync-status">
+            <strong>User:</strong> {username} &nbsp;|&nbsp; <strong>Server:</strong> {serverStatus}
+            &nbsp;|&nbsp; <strong>Pending uploads:</strong> {pendingSync.length}
+          </div>
+        )}
+      </section>
 
       <div className="row">
         <button className={`secondary ${activeTab === "draw" ? "active" : ""}`} onClick={() => setActiveTab("draw")}>Draw Lab</button>
@@ -2655,7 +2786,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, and 67-76).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for active fast algorithms (1, 7, 45, and 57).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
