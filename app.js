@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1177,6 +1177,7 @@ function runAlgorithms(vector, dataset) {
       { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: "Need training data first", confidence: 0 },
       { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: "Need training data first", confidence: 0 },
       { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: "Need training data first", confidence: 0 },
+      { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1326,6 +1327,35 @@ function runAlgorithms(vector, dataset) {
     )
   );
 
+  const algorithm37 = (() => {
+    const topNeighbors = normalizedDistances.slice(0, Math.min(3, normalizedDistances.length));
+    const labelCounts = dataset.reduce((acc, item) => {
+      acc[item.label] = (acc[item.label] || 0) + 1;
+      return acc;
+    }, {});
+    const datasetSize = Math.max(1, dataset.length);
+
+    const adjustedScores = Object.entries(algorithm34.labelScores).map(([label, score]) => {
+      const agreementBonus = label === model32Best.label ? 0.012 : 0; // tiny improvement 1: cross-model agreement bump
+      const neighborBonus = topNeighbors.reduce((bonus, neighbor, index) => {
+        if (neighbor.label !== label) return bonus;
+        return bonus + 0.01 / (index + 1);
+      }, 0); // tiny improvement 2: nearest-neighbor reinforcement
+      const frequencyPenalty = ((labelCounts[label] || 0) / datasetSize) * 0.01; // tiny improvement 3: light class-bias penalty
+
+      return [label, score + agreementBonus + neighborBonus - frequencyPenalty];
+    });
+
+    const ranked = adjustedScores.sort((a, b) => b[1] - a[1]);
+    const sharpenedProbabilities = softmax(ranked.map(([, score]) => score * 2.8));
+    const boostedConfidence = Math.round((sharpenedProbabilities[0] || 0) * 100);
+
+    return {
+      label: ranked[0]?.[0] || "unknown",
+      confidence: Math.max(1, Math.min(99, boostedConfidence)),
+    };
+  })();
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
@@ -1335,6 +1365,7 @@ function runAlgorithms(vector, dataset) {
     { id: 34, name: "Algorithm 34 (Dev: Alg7+ 5-tweak Prototype Blend)", label: algorithm34.label, confidence: algorithm34.confidence },
     { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: model35.label, confidence: model35.confidence },
     { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: algorithm36.label, confidence: algorithm36.confidence },
+    { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: algorithm37.label, confidence: algorithm37.confidence },
   ];
 }
 
@@ -1355,10 +1386,9 @@ function App() {
   const [selectedModel, setSelectedModel] = useState("hyperdraw_v2");
   const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
-  const [confidence, setConfidence] = useState(0);
   const [compareResults, setCompareResults] = useState({
-    hyperDraw: { label: "start drawing", confidence: 0 },
-    hyperDrawV2: { label: "start drawing", confidence: 0 },
+    hyperDraw: { label: "start drawing" },
+    hyperDrawV2: { label: "start drawing" },
   });
   const [compareStats, setCompareStats] = useState(() => loadCompareStats());
   const [statusMessage, setStatusMessage] = useState("");
@@ -1462,10 +1492,9 @@ function App() {
     activeStrokeRef.current = null;
     drawingRevisionRef.current += 1;
     setGuess("start drawing");
-    setConfidence(0);
     setCompareResults({
-      hyperDraw: { label: "start drawing", confidence: 0 },
-      hyperDrawV2: { label: "start drawing", confidence: 0 },
+      hyperDraw: { label: "start drawing" },
+      hyperDrawV2: { label: "start drawing" },
     });
     setStatusMessage("");
     if (guessTimeoutRef.current) {
@@ -1524,19 +1553,16 @@ function App() {
 
     if (!drawingStats.hasAnyInk) {
       setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
-      setConfidence(0);
       return;
     }
 
     if (!drawingStats.hasMeaningfulDrawing && !shouldGuessV2Early) {
       setStatusMessage("Draw a little more for HyperDraw to start guessing.");
-      setConfidence(0);
       return;
     }
 
     if (dataset.length === 0) {
       setGuess("Need training data first");
-      setConfidence(0);
       setStatusMessage("Train me with a few drawings before guessing.");
       setLastDoneResults([]);
       return;
@@ -1544,19 +1570,16 @@ function App() {
 
     const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(drawingStats.vec, preparedLiveDataset);
     const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
-    const conf = Math.max(1, Math.min(99, selected.confidence));
-    const lowConfidence = conf < 60;
 
     setGuess(selected.label);
-    setConfidence(conf);
     setCompareResults({
-      hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
-      hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
+      hyperDraw: { label: hyperDraw.label },
+      hyperDrawV2: { label: hyperDrawV2.label },
     });
     if (devMode) {
       setLastDoneResults(runAlgorithms(drawingStats.vec, dataset));
     }
-    setStatusMessage(lowConfidence ? "Low confidence guess — try cleaner strokes for better accuracy." : "");
+    setStatusMessage("");
   };
 
   const scheduleGuess = (immediate = false) => {
@@ -1603,8 +1626,8 @@ function App() {
     const results = runAlgorithms(vec, dataset);
 
     setCompareResults({
-      hyperDraw: { label: hyperDraw.label, confidence: Math.max(1, Math.min(99, hyperDraw.confidence || 0)) },
-      hyperDrawV2: { label: hyperDrawV2.label, confidence: Math.max(1, Math.min(99, hyperDrawV2.confidence || 0)) },
+      hyperDraw: { label: hyperDraw.label },
+      hyperDrawV2: { label: hyperDrawV2.label },
     });
     setLastDoneResults(results);
     setAlgorithmStats((previous) =>
@@ -1713,19 +1736,16 @@ function App() {
           {!compareMode ? (
             <>
               <p className="big">{guess}</p>
-              <p>Confidence: {confidence}%</p>
             </>
           ) : (
             <div className="compare-grid">
               <div className="stat">
                 <div><strong>HyperDraw</strong></div>
                 <div>Guess: {compareResults.hyperDraw.label}</div>
-                <div>Confidence: {compareResults.hyperDraw.confidence}%</div>
               </div>
               <div className="stat">
                 <div><strong>HyperDraw_v2</strong></div>
                 <div>Guess: {compareResults.hyperDrawV2.label}</div>
-                <div>Confidence: {compareResults.hyperDrawV2.confidence}%</div>
               </div>
             </div>
           )}
@@ -1753,7 +1773,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, and 36.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, 36, and 37.</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
@@ -1789,7 +1809,6 @@ function App() {
                       <div className="stat" key={`${devStatsView}-${algo.id}`}>
                         <div><strong>Algorithm {algo.id}</strong>{algo.id === 1 ? " (live model)" : ""}</div>
                         <div>Guess: {latest?.label || "-"}</div>
-                        <div>Guess confidence: {latest?.confidence ?? 0}%</div>
                         <div>
                           {devStatsView === "session" ? "Session rate" : "Correctness rate"}: {accuracy}% ({algo.correct}/{algo.attempts})
                         </div>
