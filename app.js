@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1179,6 +1179,19 @@ function runAlgorithms(vector, dataset) {
       { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: "Need training data first", confidence: 0 },
       { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: "Need training data first", confidence: 0 },
       { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: "Need training data first", confidence: 0 },
+      { id: 39, name: "Algorithm 39 (Dev: Alg7 + line blend)", label: "Need training data first", confidence: 0 },
+      { id: 40, name: "Algorithm 40 (Dev: Alg7 + density trim)", label: "Need training data first", confidence: 0 },
+      { id: 41, name: "Algorithm 41 (Dev: Alg7 + center trim)", label: "Need training data first", confidence: 0 },
+      { id: 42, name: "Algorithm 42 (Dev: Alg7 + line+density)", label: "Need training data first", confidence: 0 },
+      { id: 43, name: "Algorithm 43 (Dev: Alg7 + line+center)", label: "Need training data first", confidence: 0 },
+      { id: 44, name: "Algorithm 44 (Dev: Alg7 + density+center)", label: "Need training data first", confidence: 0 },
+      { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
+      { id: 46, name: "Algorithm 46 (Dev: Alg7 + 6NN support)", label: "Need training data first", confidence: 0 },
+      { id: 47, name: "Algorithm 47 (Dev: Alg7 + class-balance)", label: "Need training data first", confidence: 0 },
+      { id: 48, name: "Algorithm 48 (Dev: Alg7 + line+balance)", label: "Need training data first", confidence: 0 },
+      { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", label: "Need training data first", confidence: 0 },
+      { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", label: "Need training data first", confidence: 0 },
+      { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1419,6 +1432,79 @@ function runAlgorithms(vector, dataset) {
     };
   })();
 
+  const datasetLabelCounts = dataset.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1;
+    return acc;
+  }, {});
+  const datasetSize = Math.max(1, dataset.length);
+  const inputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+  const prototypeFeaturesByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = extractLineFeaturesForSize(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+
+  const scoreAlgo7Variant = ({
+    lineBlend = 0,
+    densityWeight = 0,
+    centerWeight = 0,
+    neighborDepth = 0,
+    balancePenalty = 0,
+    temperature = 2,
+  }) => {
+    const topNeighbors = normalizedDistances.slice(0, Math.min(neighborDepth, normalizedDistances.length));
+    const ranked = Object.entries(prototypesNormalized)
+      .map(([label, prototype]) => {
+        const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+        const prototypeFeatures = prototypeFeaturesByLabel[label];
+        const lineDistance = featureDistance(inputFeatures, prototypeFeatures);
+        const densityGap = Math.abs((inputFeatures[4] || 0) - (prototypeFeatures[4] || 0));
+        const centerGap =
+          Math.abs((inputFeatures[5] || 0.5) - (prototypeFeatures[5] || 0.5)) +
+          Math.abs((inputFeatures[6] || 0.5) - (prototypeFeatures[6] || 0.5));
+
+        const blendedDistance =
+          prototypeDistance * (1 - lineBlend) +
+          lineDistance * lineBlend +
+          densityGap * densityWeight +
+          centerGap * centerWeight;
+
+        const baseScore = 1 / Math.max(0.001, blendedDistance + 0.05);
+        const neighborScore = topNeighbors.reduce((bonus, neighbor, index) => {
+          if (neighbor.label !== label) return bonus;
+          return bonus + 0.05 / (index + 1);
+        }, 0);
+        const priorPenalty = ((datasetLabelCounts[label] || 0) / datasetSize) * balancePenalty;
+
+        return {
+          label,
+          score: baseScore + neighborScore - priorPenalty,
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const probabilities = softmax(ranked.map((entry) => entry.score * temperature));
+    return {
+      label: ranked[0]?.label || "unknown",
+      confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+    };
+  };
+
+  const algorithm7Variants = [
+    { id: 39, name: "Algorithm 39 (Dev: Alg7 + line blend)", ...scoreAlgo7Variant({ lineBlend: 0.16 }) },
+    { id: 40, name: "Algorithm 40 (Dev: Alg7 + density trim)", ...scoreAlgo7Variant({ densityWeight: 0.09 }) },
+    { id: 41, name: "Algorithm 41 (Dev: Alg7 + center trim)", ...scoreAlgo7Variant({ centerWeight: 0.06 }) },
+    { id: 42, name: "Algorithm 42 (Dev: Alg7 + line+density)", ...scoreAlgo7Variant({ lineBlend: 0.14, densityWeight: 0.08 }) },
+    { id: 43, name: "Algorithm 43 (Dev: Alg7 + line+center)", ...scoreAlgo7Variant({ lineBlend: 0.14, centerWeight: 0.05 }) },
+    { id: 44, name: "Algorithm 44 (Dev: Alg7 + density+center)", ...scoreAlgo7Variant({ densityWeight: 0.08, centerWeight: 0.05 }) },
+    { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", ...scoreAlgo7Variant({ neighborDepth: 4 }) },
+    { id: 46, name: "Algorithm 46 (Dev: Alg7 + 6NN support)", ...scoreAlgo7Variant({ neighborDepth: 6, temperature: 2.15 }) },
+    { id: 47, name: "Algorithm 47 (Dev: Alg7 + class-balance)", ...scoreAlgo7Variant({ balancePenalty: 0.05 }) },
+    { id: 48, name: "Algorithm 48 (Dev: Alg7 + line+balance)", ...scoreAlgo7Variant({ lineBlend: 0.12, balancePenalty: 0.05 }) },
+    { id: 49, name: "Algorithm 49 (Dev: Alg7 + center+balance)", ...scoreAlgo7Variant({ centerWeight: 0.05, balancePenalty: 0.05 }) },
+    { id: 50, name: "Algorithm 50 (Dev: Alg7 + dense+4NN)", ...scoreAlgo7Variant({ densityWeight: 0.08, neighborDepth: 4 }) },
+    { id: 51, name: "Algorithm 51 (Dev: Alg7 + line+6NN)", ...scoreAlgo7Variant({ lineBlend: 0.13, neighborDepth: 6 }) },
+  ];
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
@@ -1430,6 +1516,7 @@ function runAlgorithms(vector, dataset) {
     { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: algorithm36.label, confidence: algorithm36.confidence },
     { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: algorithm37.label, confidence: algorithm37.confidence },
     { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: algorithm38.label, confidence: algorithm38.confidence },
+    ...algorithm7Variants,
   ];
 }
 
@@ -1837,7 +1924,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, 36, 37, and 38.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 21, 32-38, and 39-51).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
