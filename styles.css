@@ -201,3 +201,8 @@ select {
   line-height: 1.55;
   margin: 0.9rem 0;
 }
+
+
+.server-card {
+  margin: 0 0 1rem;
+}
