@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 59, 60];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -223,6 +223,140 @@ function normalizeVector(vector) {
   }
 
   return output;
+}
+
+function sampleVectorBilinear(vector, x, y) {
+  if (x < 0 || x > GRID_SIZE - 1 || y < 0 || y > GRID_SIZE - 1) return 0;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(GRID_SIZE - 1, x0 + 1);
+  const y1 = Math.min(GRID_SIZE - 1, y0 + 1);
+  const dx = x - x0;
+  const dy = y - y0;
+
+  const v00 = vector[y0 * GRID_SIZE + x0] || 0;
+  const v10 = vector[y0 * GRID_SIZE + x1] || 0;
+  const v01 = vector[y1 * GRID_SIZE + x0] || 0;
+  const v11 = vector[y1 * GRID_SIZE + x1] || 0;
+
+  const top = v00 * (1 - dx) + v10 * dx;
+  const bottom = v01 * (1 - dx) + v11 * dx;
+  return top * (1 - dy) + bottom * dy;
+}
+
+function transformVector(vector, { translateX = 0, translateY = 0, angle = 0, scale = 1 } = {}) {
+  const center = (GRID_SIZE - 1) / 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const safeScale = Math.max(scale, 0.01);
+  const output = new Array(vector.length).fill(0);
+
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const tx = x - center - translateX;
+      const ty = y - center - translateY;
+      const scaledX = tx / safeScale;
+      const scaledY = ty / safeScale;
+      const sourceX = center + (scaledX * cos + scaledY * sin);
+      const sourceY = center + (-scaledX * sin + scaledY * cos);
+      output[y * GRID_SIZE + x] = sampleVectorBilinear(vector, sourceX, sourceY);
+    }
+  }
+
+  return output;
+}
+
+function centroid(vector) {
+  let weight = 0;
+  let sumX = 0;
+  let sumY = 0;
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const value = Math.max(0, vector[y * GRID_SIZE + x] || 0);
+      if (value <= 0.01) continue;
+      weight += value;
+      sumX += x * value;
+      sumY += y * value;
+    }
+  }
+
+  if (weight <= 0.0001) {
+    const mid = (GRID_SIZE - 1) / 2;
+    return { x: mid, y: mid };
+  }
+
+  return { x: sumX / weight, y: sumY / weight };
+}
+
+function flipVectorVertical(vector) {
+  const output = new Array(vector.length).fill(0);
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      output[y * GRID_SIZE + x] = vector[(GRID_SIZE - 1 - y) * GRID_SIZE + x] || 0;
+    }
+  }
+  return output;
+}
+
+function coneMassScore(vector) {
+  const mid = (GRID_SIZE - 1) / 2;
+  let score = 0;
+  const coneWidth = Math.PI / 12;
+
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const value = vector[y * GRID_SIZE + x] || 0;
+      if (value <= 0.01) continue;
+      const dx = x - mid;
+      const dy = y - mid;
+      if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) continue;
+      const angleFromUp = Math.atan2(dx, -dy);
+      if (Math.abs(angleFromUp) <= coneWidth) {
+        const radialWeight = Math.max(0.2, Math.hypot(dx, dy) / mid);
+        score += value * radialWeight;
+      }
+    }
+  }
+  return score;
+}
+
+function applyAlg59Transform(vector) {
+  const mid = (GRID_SIZE - 1) / 2;
+  const startCenter = centroid(vector);
+  const centered = transformVector(vector, {
+    translateX: startCenter.x - mid,
+    translateY: startCenter.y - mid,
+  });
+
+  let bestAngle = 0;
+  let bestScore = -Infinity;
+  for (let degrees = -180; degrees <= 180; degrees += 3) {
+    const angle = (degrees * Math.PI) / 180;
+    const candidate = transformVector(centered, { angle });
+    const score = coneMassScore(candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAngle = angle;
+    }
+  }
+
+  const rotated = transformVector(centered, { angle: bestAngle });
+  const recentered = (() => {
+    const c = centroid(rotated);
+    return transformVector(rotated, {
+      translateX: c.x - mid,
+      translateY: c.y - mid,
+    });
+  })();
+
+  const box = boundingBox(recentered);
+  if (!box) return recentered;
+
+  const width = Math.max(1, box.maxX - box.minX + 1);
+  const height = Math.max(1, box.maxY - box.minY + 1);
+  const target = GRID_SIZE;
+  const scale = Math.max(1, Math.min(target / width, target / height));
+  return transformVector(recentered, { scale });
 }
 
 function buildLabelPrototypes(dataset) {
@@ -1193,6 +1327,8 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
+      { id: 59, name: "Algorithm 59 (Dev: Alg57 + center/rotate/scale + flips)", label: "Need training data first", confidence: 0 },
+      { id: 60, name: "Algorithm 60 (Dev: Alg45 + center/rotate/scale + flips)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1287,11 +1423,73 @@ function runAlgorithms(vector, dataset) {
 
   const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
+
+  const scoreAlg59Family = ({
+    lineBlend = 0,
+    densityWeight = 0,
+    centerWeight = 0,
+    neighborDepth = 4,
+    temperature = 2.2,
+  }) => {
+    const transformedInput = applyAlg59Transform(vector);
+    const inputOptions = [
+      transformedInput,
+      flipVectorHorizontal(transformedInput),
+      flipVectorVertical(transformedInput),
+    ];
+
+    const scored = Object.entries(prototypesNormalized)
+      .map(([label]) => {
+        const labelItems = dataset.filter((item) => item.label === label);
+        if (!labelItems.length) return { label, score: 0.0001 };
+
+        const perDrawing = labelItems.map((item, idx) => {
+          const transformedSample = applyAlg59Transform(item.vector);
+          const sampleFeatures = extractLineFeaturesForSize(transformedSample, GRID_SIZE);
+
+          let bestDistance = Infinity;
+          inputOptions.forEach((candidate) => {
+            const prototypeDistance = distance(candidate, transformedSample) / Math.sqrt(vector.length);
+            const inputLineFeatures = extractLineFeaturesForSize(candidate, GRID_SIZE);
+            const lineDistance = featureDistance(inputLineFeatures, sampleFeatures);
+            const densityGap = Math.abs((inputLineFeatures[4] || 0) - (sampleFeatures[4] || 0));
+            const centerGap =
+              Math.abs((inputLineFeatures[5] || 0.5) - (sampleFeatures[5] || 0.5)) +
+              Math.abs((inputLineFeatures[6] || 0.5) - (sampleFeatures[6] || 0.5));
+
+            const blendedDistance =
+              prototypeDistance * (1 - lineBlend) +
+              lineDistance * lineBlend +
+              densityGap * densityWeight +
+              centerGap * centerWeight;
+            if (blendedDistance < bestDistance) bestDistance = blendedDistance;
+          });
+
+          return { key: `${label}-${idx}`, distance: bestDistance };
+        }).sort((a, b) => a.distance - b.distance);
+
+        const uniqueTop = perDrawing.slice(0, Math.min(neighborDepth, perDrawing.length));
+        const score = uniqueTop.reduce((sum, neighbor, index) => sum + 1 / Math.max(0.001, neighbor.distance + 0.05 + index * 0.01), 0);
+        return { label, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const probabilities = softmax(scored.map((entry) => entry.score * temperature));
+    return {
+      label: scored[0]?.label || "unknown",
+      confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+    };
+  };
+
+  const algorithm59 = scoreAlg59Family({ lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, neighborDepth: 4, temperature: 2.35 });
+  const algorithm60 = scoreAlg59Family({ neighborDepth: 4 });
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
+    { id: 59, name: "Algorithm 59 (Dev: Alg57 + center/rotate/scale + flips)", label: algorithm59.label, confidence: algorithm59.confidence },
+    { id: 60, name: "Algorithm 60 (Dev: Alg45 + center/rotate/scale + flips)", label: algorithm60.label, confidence: algorithm60.confidence },
   ];
 }
 
@@ -1700,7 +1898,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, and 57).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 59, and 60).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
