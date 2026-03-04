@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 63];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -282,6 +282,29 @@ function centroid(vector) {
 
   if (weight <= 0.0001) {
     const mid = (GRID_SIZE - 1) / 2;
+    return { x: mid, y: mid };
+  }
+
+  return { x: sumX / weight, y: sumY / weight };
+}
+
+function centroidForSize(vector, size) {
+  let weight = 0;
+  let sumX = 0;
+  let sumY = 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = Math.max(0, vector[y * size + x] || 0);
+      if (value <= 0.01) continue;
+      weight += value;
+      sumX += x * value;
+      sumY += y * value;
+    }
+  }
+
+  if (weight <= 0.0001) {
+    const mid = (size - 1) / 2;
     return { x: mid, y: mid };
   }
 
@@ -1076,6 +1099,149 @@ function scoreAlgo31(input16, dataset16) {
   };
 }
 
+function buildRaesDescriptor(vector, size = GRID_SIZE, radialBins = 8, angleBins = 16) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const center = centroidForSize(normalized, size);
+
+  let totalInk = 0;
+  let radiusMoment = 0;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = Math.max(0, normalized[y * size + x] || 0);
+      if (value <= 0.01) continue;
+      const dx = x - center.x;
+      const dy = y - center.y;
+      totalInk += value;
+      radiusMoment += (dx * dx + dy * dy) * value;
+    }
+  }
+
+  const effectiveRadius = Math.sqrt(radiusMoment / Math.max(totalInk, 1e-6)) + 1e-6;
+  const hist = new Array(radialBins * angleBins).fill(0);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = Math.max(0, normalized[y * size + x] || 0);
+      if (value <= 0.01) continue;
+
+      const dx = x - center.x;
+      const dy = y - center.y;
+      const normalizedRadius = Math.min(0.9999, Math.sqrt(dx * dx + dy * dy) / effectiveRadius);
+      const angle = Math.atan2(dy, dx);
+      const angleUnit = (angle + Math.PI) / (2 * Math.PI);
+
+      const radialIndex = Math.min(radialBins - 1, Math.floor(normalizedRadius * radialBins));
+      const angleIndex = Math.min(angleBins - 1, Math.floor(angleUnit * angleBins));
+      hist[radialIndex * angleBins + angleIndex] += value;
+    }
+  }
+
+  const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+  const normalizedHist = hist.map((value) => value / Math.max(norm, 1e-6));
+
+  return {
+    hist: normalizedHist,
+    angleBins,
+    radialBins,
+    inkDensity: totalInk / Math.max(1, size * size),
+  };
+}
+
+function flipRaesAngles(hist, radialBins, angleBins) {
+  const flipped = new Array(hist.length).fill(0);
+  for (let r = 0; r < radialBins; r += 1) {
+    for (let a = 0; a < angleBins; a += 1) {
+      const targetA = (angleBins - a) % angleBins;
+      flipped[r * angleBins + targetA] = hist[r * angleBins + a];
+    }
+  }
+  return flipped;
+}
+
+function raesRotationalDistance(histA, histB, radialBins, angleBins) {
+  const featureCount = radialBins * angleBins;
+  let best = Number.POSITIVE_INFINITY;
+
+  for (let shift = 0; shift < angleBins; shift += 1) {
+    let sum = 0;
+    for (let r = 0; r < radialBins; r += 1) {
+      const base = r * angleBins;
+      for (let a = 0; a < angleBins; a += 1) {
+        const shiftedIndex = base + ((a + shift) % angleBins);
+        const d = histA[base + a] - histB[shiftedIndex];
+        sum += d * d;
+      }
+    }
+    best = Math.min(best, Math.sqrt(sum / Math.max(1, featureCount)));
+  }
+
+  return best;
+}
+
+function raesInvariantDistance(descA, descB) {
+  const direct = raesRotationalDistance(descA.hist, descB.hist, descA.radialBins, descA.angleBins);
+  const flippedHist = flipRaesAngles(descB.hist, descA.radialBins, descA.angleBins);
+  const flipped = raesRotationalDistance(descA.hist, flippedHist, descA.radialBins, descA.angleBins);
+  const shapeDistance = Math.min(direct, flipped);
+  const densityDistance = Math.abs(descA.inkDensity - descB.inkDensity);
+  return shapeDistance * 0.9 + densityDistance * 0.1;
+}
+
+function scoreAlgo63(input16, dataset16, options = {}) {
+  const { radialBins = 8, angleBins = 16, topLabels = 8, k = 19, distanceFloor = 0.01 } = options;
+  const inputDesc = buildRaesDescriptor(input16, GRID_SIZE, radialBins, angleBins);
+  const descriptors = dataset16.map((item) => ({
+    label: item.label,
+    desc: buildRaesDescriptor(item.vector, GRID_SIZE, radialBins, angleBins),
+  }));
+
+  const grouped = descriptors.reduce((acc, item) => {
+    if (!acc[item.label]) {
+      acc[item.label] = {
+        count: 0,
+        hist: new Array(radialBins * angleBins).fill(0),
+        inkDensity: 0,
+      };
+    }
+    acc[item.label].count += 1;
+    acc[item.label].inkDensity += item.desc.inkDensity;
+    for (let i = 0; i < acc[item.label].hist.length; i += 1) {
+      acc[item.label].hist[i] += item.desc.hist[i];
+    }
+    return acc;
+  }, {});
+
+  const prototypeRanked = Object.entries(grouped)
+    .map(([label, proto]) => {
+      const count = Math.max(1, proto.count);
+      const hist = proto.hist.map((value) => value / count);
+      const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+      const prototypeDesc = {
+        hist: hist.map((value) => value / Math.max(norm, 1e-6)),
+        radialBins,
+        angleBins,
+        inkDensity: proto.inkDensity / count,
+      };
+
+      return {
+        label,
+        distance: raesInvariantDistance(inputDesc, prototypeDesc),
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const candidateLabels = new Set(prototypeRanked.slice(0, Math.min(topLabels, prototypeRanked.length)).map((entry) => entry.label));
+  const scored = descriptors
+    .filter((item) => candidateLabels.has(item.label))
+    .map((item) => ({
+      label: item.label,
+      distance: Math.max(distanceFloor, raesInvariantDistance(inputDesc, item.desc)),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  return voteByInverseDistance(scored, k);
+}
+
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -1256,6 +1422,7 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
       { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
+      { id: 63, name: "Algorithm 63 (Dev: RAES log-polar signature)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1350,12 +1517,14 @@ function runAlgorithms(vector, dataset) {
 
   const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
   const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
+  const algorithm63 = scoreAlgo63(normalizedInput, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
     { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
+    { id: 63, name: "Algorithm 63 (Dev: RAES log-polar signature)", label: algorithm63.label, confidence: algorithm63.confidence },
   ];
 }
 
@@ -1764,7 +1933,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, and 57).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, and 63).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
