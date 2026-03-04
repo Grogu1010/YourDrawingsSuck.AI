@@ -13,7 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
-const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 21, 32, 33, 34, 35, 36, 37, 38];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 const GRID_SIZE_V3 = 32;
@@ -1178,6 +1178,7 @@ function runAlgorithms(vector, dataset) {
       { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: "Need training data first", confidence: 0 },
       { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: "Need training data first", confidence: 0 },
       { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: "Need training data first", confidence: 0 },
+      { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -1356,6 +1357,68 @@ function runAlgorithms(vector, dataset) {
     };
   })();
 
+  const algorithm38 = (() => {
+    const normalizedInputFeatures38 = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+    const topNeighbors = normalizedDistances.slice(0, Math.min(8, normalizedDistances.length));
+    const labelCounts = dataset.reduce((acc, item) => {
+      acc[item.label] = (acc[item.label] || 0) + 1;
+      return acc;
+    }, {});
+    const datasetSize = Math.max(1, dataset.length);
+
+    const scores = Object.entries(prototypesNormalized).map(([label, prototype]) => {
+      const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+      const prototypeFeatures = extractLineFeaturesForSize(prototype, GRID_SIZE);
+      const lineDistance = featureDistance(normalizedInputFeatures38, prototypeFeatures);
+
+      const agreement21 = model21.label === label ? 0.1 : 0;
+      const agreement32 = model32Best.label === label ? 0.06 : 0;
+      const agreement37 = algorithm37.label === label ? 0.05 : 0;
+
+      const neighborVote = topNeighbors.reduce((sum, neighbor, index) => {
+        if (neighbor.label !== label) return sum;
+        return sum + 1 / (index + 1.5);
+      }, 0);
+
+      const densityGap = Math.abs((normalizedInputFeatures38[4] || 0) - (prototypeFeatures[4] || 0));
+      const centerGap =
+        Math.abs((normalizedInputFeatures38[5] || 0.5) - (prototypeFeatures[5] || 0.5)) +
+        Math.abs((normalizedInputFeatures38[6] || 0.5) - (prototypeFeatures[6] || 0.5));
+
+      const classPriorPenalty = (labelCounts[label] || 0) / datasetSize;
+
+      const energy =
+        prototypeDistance * 0.54 +
+        lineDistance * 0.26 +
+        densityGap * 0.1 +
+        centerGap * 0.08 +
+        classPriorPenalty * 0.05;
+
+      const score =
+        1 / Math.max(0.001, energy + 0.03) +
+        neighborVote * 0.18 +
+        agreement21 +
+        agreement32 +
+        agreement37;
+
+      return { label, score, energy };
+    });
+
+    const ranked = scores.sort((a, b) => b.score - a.score);
+    const probabilities = softmax(ranked.map((entry) => entry.score * 2.2));
+    const top = ranked[0] || { label: "unknown", energy: 1 };
+    const secondProb = probabilities[1] || 0;
+    const margin = (probabilities[0] || 0) - secondProb;
+    const calibratedConfidence = Math.round(
+      Math.max(1, Math.min(99, ((probabilities[0] || 0) * 0.72 + margin * 0.28) * 100 - top.energy * 9))
+    );
+
+    return {
+      label: top.label,
+      confidence: calibratedConfidence,
+    };
+  })();
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
@@ -1366,6 +1429,7 @@ function runAlgorithms(vector, dataset) {
     { id: 35, name: "Algorithm 35 (Dev: Alg32 + Alg34 Combo)", label: model35.label, confidence: model35.confidence },
     { id: 36, name: "Algorithm 36 (Dev: Alg34 High-Confidence Mode)", label: algorithm36.label, confidence: algorithm36.confidence },
     { id: 37, name: "Algorithm 37 (Dev: Alg36 + 3 Tiny Tweaks)", label: algorithm37.label, confidence: algorithm37.confidence },
+    { id: 38, name: "Algorithm 38 (Dev: Adaptive Prototype Fusion)", label: algorithm38.label, confidence: algorithm38.confidence },
   ];
 }
 
@@ -1773,7 +1837,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, 36, and 37.</p>
+              <p>Click <strong>Done</strong> to log correctness rates for algorithms 1, 7, 21, 32, 33, 34, 35, 36, 37, and 38.</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
