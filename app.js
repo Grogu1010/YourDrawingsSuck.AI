@@ -18,7 +18,7 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1880,6 +1880,48 @@ function extractLineFeaturesForSize(vector, size) {
   ];
 }
 
+function extractScaleAwareLineLengthFeatures(vector, size = GRID_SIZE) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const { edge, strokeWidth } = extractThicknessCompensatedFeatures(normalized, size);
+  const rowLengths = new Array(size).fill(0);
+  const colLengths = new Array(size).fill(0);
+  let edgePixels = 0;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = edge[y * size + x] ? 1 : 0;
+      edgePixels += value;
+      rowLengths[y] += value;
+      colLengths[x] += value;
+    }
+  }
+
+  const safeEdgePixels = Math.max(1, edgePixels);
+  const rowProfile = rowLengths.map((value) => value / safeEdgePixels);
+  const colProfile = colLengths.map((value) => value / safeEdgePixels);
+  const shapeFeatures = extractLineFeaturesForSize(normalized, size);
+
+  return {
+    normalized,
+    profile: [...rowProfile, ...colProfile, ...shapeFeatures, Math.min(1, strokeWidth / 4)],
+    density: edgePixels / (size * size),
+  };
+}
+
+function minTransformDistanceForSize(a, b, size = GRID_SIZE) {
+  const aVariants = generateTransformVariantsForSize(a, size);
+  const bVariants = generateTransformVariantsForSize(b, size);
+  let best = Number.POSITIVE_INFINITY;
+
+  aVariants.forEach((aVariant) => {
+    bVariants.forEach((bVariant) => {
+      best = Math.min(best, distance(aVariant, bVariant) / Math.sqrt(size * size));
+    });
+  });
+
+  return best;
+}
+
 function scoreTransformInvariantModelForSize(inputVector, dataset, size, options = {}) {
   const { k = 17, distanceFloor = 0.02, featureWeight = 0.35, centerWeightPower = 0 } = options;
   const inputNorm = normalizeVectorForSize(inputVector, size);
@@ -2021,6 +2063,16 @@ function runAlgorithms(vector, dataset) {
       { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
       { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
       { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
+      { id: 67, name: "Algorithm 67 (Dev: Alg45 + full transform parity)", label: "Need training data first", confidence: 0 },
+      { id: 68, name: "Algorithm 68 (Dev: Alg45 + transform + line-length)", label: "Need training data first", confidence: 0 },
+      { id: 69, name: "Algorithm 69 (Dev: Alg45 + transform + balance)", label: "Need training data first", confidence: 0 },
+      { id: 70, name: "Algorithm 70 (Dev: Alg45 + transform + density)", label: "Need training data first", confidence: 0 },
+      { id: 71, name: "Algorithm 71 (Dev: Alg45 + transform + stronger neighbors)", label: "Need training data first", confidence: 0 },
+      { id: 72, name: "Algorithm 72 (Dev: Alg45 + transform + center control)", label: "Need training data first", confidence: 0 },
+      { id: 73, name: "Algorithm 73 (Dev: Alg45 + transform + confidence heat)", label: "Need training data first", confidence: 0 },
+      { id: 74, name: "Algorithm 74 (Dev: Alg45 + transform + line-priority)", label: "Need training data first", confidence: 0 },
+      { id: 75, name: "Algorithm 75 (Dev: Alg45 + transform + anti-bias)", label: "Need training data first", confidence: 0 },
+      { id: 76, name: "Algorithm 76 (Dev: Alg45 + transform consensus)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2066,6 +2118,24 @@ function runAlgorithms(vector, dataset) {
     return acc;
   }, {});
   const datasetSize = Math.max(1, dataset.length);
+
+  const invariantInput = extractScaleAwareLineLengthFeatures(normalizedInput, GRID_SIZE);
+  const invariantPrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = extractScaleAwareLineLengthFeatures(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+  const invariantDistances = dataset
+    .map((item) => {
+      const sample = extractScaleAwareLineLengthFeatures(normalizeVector(item.vector), GRID_SIZE);
+      const transformDistance = minTransformDistanceForSize(invariantInput.normalized, sample.normalized, GRID_SIZE);
+      const lineLengthDistance = featureDistance(invariantInput.profile, sample.profile);
+      const densityGap = Math.abs(invariantInput.density - sample.density);
+      return {
+        label: item.label,
+        distance: transformDistance + lineLengthDistance * 0.12 + densityGap * 0.16,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
 
   const scoreAlgo7Variant = ({
     lineBlend = 0,
@@ -2119,6 +2189,60 @@ function runAlgorithms(vector, dataset) {
   const algorithm65 = scoreAlgo65(normalizedInput, dataset);
   const algorithm66 = scoreAlgo66(normalizedInput, dataset);
 
+  const scoreAlgo45TransformVariant = ({
+    neighborDepth = 6,
+    lineBlend = 0.12,
+    densityWeight = 0.04,
+    balancePenalty = 0,
+    temperature = 2.3,
+    centerWeight = 0,
+  }) => {
+    const topNeighbors = invariantDistances.slice(0, Math.min(neighborDepth, invariantDistances.length));
+    const ranked = Object.entries(invariantPrototypeByLabel)
+      .map(([label, prototype]) => {
+        const transformDistance = minTransformDistanceForSize(invariantInput.normalized, prototype.normalized, GRID_SIZE);
+        const lineDistance = featureDistance(invariantInput.profile, prototype.profile);
+        const densityGap = Math.abs(invariantInput.density - prototype.density);
+
+        const centerGap =
+          Math.abs((invariantInput.profile[2 * GRID_SIZE + 5] || 0.5) - (prototype.profile[2 * GRID_SIZE + 5] || 0.5)) +
+          Math.abs((invariantInput.profile[2 * GRID_SIZE + 6] || 0.5) - (prototype.profile[2 * GRID_SIZE + 6] || 0.5));
+
+        const blendedDistance =
+          transformDistance * (1 - lineBlend) +
+          lineDistance * lineBlend +
+          densityGap * densityWeight +
+          centerGap * centerWeight;
+
+        const baseScore = 1 / Math.max(0.001, blendedDistance + 0.04);
+        const neighborScore = topNeighbors.reduce((bonus, neighbor, index) => {
+          if (neighbor.label !== label) return bonus;
+          return bonus + 0.06 / (index + 1);
+        }, 0);
+        const priorPenalty = ((datasetLabelCounts[label] || 0) / datasetSize) * balancePenalty;
+
+        return { label, score: baseScore + neighborScore - priorPenalty };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const probabilities = softmax(ranked.map((entry) => entry.score * temperature));
+    return {
+      label: ranked[0]?.label || "unknown",
+      confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+    };
+  };
+
+  const algorithm67 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.1, densityWeight: 0.04, temperature: 2.35 });
+  const algorithm68 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.16, densityWeight: 0.05, temperature: 2.3 });
+  const algorithm69 = scoreAlgo45TransformVariant({ neighborDepth: 7, lineBlend: 0.14, densityWeight: 0.04, balancePenalty: 0.08, temperature: 2.4 });
+  const algorithm70 = scoreAlgo45TransformVariant({ neighborDepth: 5, lineBlend: 0.11, densityWeight: 0.08, temperature: 2.3 });
+  const algorithm71 = scoreAlgo45TransformVariant({ neighborDepth: 9, lineBlend: 0.13, densityWeight: 0.04, temperature: 2.2 });
+  const algorithm72 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.13, densityWeight: 0.04, centerWeight: 0.05, temperature: 2.35 });
+  const algorithm73 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.12, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.55 });
+  const algorithm74 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.22, densityWeight: 0.03, temperature: 2.3 });
+  const algorithm75 = scoreAlgo45TransformVariant({ neighborDepth: 7, lineBlend: 0.16, densityWeight: 0.04, balancePenalty: 0.14, temperature: 2.35 });
+  const algorithm76 = scoreAlgo45TransformVariant({ neighborDepth: 8, lineBlend: 0.18, densityWeight: 0.05, balancePenalty: 0.08, centerWeight: 0.03, temperature: 2.3 });
+
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
@@ -2127,6 +2251,16 @@ function runAlgorithms(vector, dataset) {
     { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
     { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
     { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
+    { id: 67, name: "Algorithm 67 (Dev: Alg45 + full transform parity)", label: algorithm67.label, confidence: algorithm67.confidence },
+    { id: 68, name: "Algorithm 68 (Dev: Alg45 + transform + line-length)", label: algorithm68.label, confidence: algorithm68.confidence },
+    { id: 69, name: "Algorithm 69 (Dev: Alg45 + transform + balance)", label: algorithm69.label, confidence: algorithm69.confidence },
+    { id: 70, name: "Algorithm 70 (Dev: Alg45 + transform + density)", label: algorithm70.label, confidence: algorithm70.confidence },
+    { id: 71, name: "Algorithm 71 (Dev: Alg45 + transform + stronger neighbors)", label: algorithm71.label, confidence: algorithm71.confidence },
+    { id: 72, name: "Algorithm 72 (Dev: Alg45 + transform + center control)", label: algorithm72.label, confidence: algorithm72.confidence },
+    { id: 73, name: "Algorithm 73 (Dev: Alg45 + transform + confidence heat)", label: algorithm73.label, confidence: algorithm73.confidence },
+    { id: 74, name: "Algorithm 74 (Dev: Alg45 + transform + line-priority)", label: algorithm74.label, confidence: algorithm74.confidence },
+    { id: 75, name: "Algorithm 75 (Dev: Alg45 + transform + anti-bias)", label: algorithm75.label, confidence: algorithm75.confidence },
+    { id: 76, name: "Algorithm 76 (Dev: Alg45 + transform consensus)", label: algorithm76.label, confidence: algorithm76.confidence },
   ];
 }
 
@@ -2622,7 +2756,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, and 66).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, and 67-76).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
