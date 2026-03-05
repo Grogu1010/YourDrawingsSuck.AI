@@ -18,7 +18,7 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 68, 69, 70, 71, 74, 75];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1838,318 +1838,6 @@ function scoreAlgo67(input16, dataset16) {
   return classifyFromDistances(scored, 0.01, 2.3);
 }
 
-function radialSignatureFromCompensated(comp, size, bins = 18) {
-  let cx = 0;
-  let cy = 0;
-  let mass = 0;
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const v = comp[y * size + x];
-      mass += v;
-      cx += x * v;
-      cy += y * v;
-    }
-  }
-  if (mass < 1e-6) return new Array(bins).fill(0);
-  cx /= mass;
-  cy /= mass;
-  const sig = new Array(bins).fill(0);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const v = comp[y * size + x];
-      if (v <= 0) continue;
-      const dx = x - cx;
-      const dy = y - cy;
-      const ang = Math.atan2(dy, dx);
-      const idx = Math.min(bins - 1, Math.max(0, Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins)));
-      sig[idx] += Math.sqrt(dx * dx + dy * dy) * v;
-    }
-  }
-  const norm = Math.sqrt(sig.reduce((sum, v) => sum + v * v, 0));
-  return sig.map((v) => v / Math.max(norm, 1e-6));
-}
-
-function scoreAlgo68(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputSig = radialSignatureFromCompensated(input.compensated, GRID_SIZE, 24);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleSig = radialSignatureFromCompensated(sample.compensated, GRID_SIZE, 24);
-    const sigDistance = minCyclicL2(inputSig, sampleSig);
-    const widthDistance = Math.abs(Math.log((input.strokeWidth + 1e-3) / (sample.strokeWidth + 1e-3))) * 0.08;
-    return { label: item.label, distance: sigDistance + widthDistance };
-  });
-  return classifyFromDistances(scored, 0.01, 2.4);
-}
-
-function huLikeMomentsFromCompensated(comp, size) {
-  let m00 = 0, m10 = 0, m01 = 0;
-  for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) { const w = comp[y * size + x]; m00 += w; m10 += x * w; m01 += y * w; }
-  if (m00 < 1e-6) return new Array(7).fill(0);
-  const cx = m10 / m00, cy = m01 / m00;
-  const mu = { "20": 0, "02": 0, "11": 0, "30": 0, "03": 0, "21": 0, "12": 0 };
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const w = comp[y * size + x]; if (!w) continue;
-      const dx = x - cx, dy = y - cy;
-      mu["20"] += dx*dx*w; mu["02"] += dy*dy*w; mu["11"] += dx*dy*w;
-      mu["30"] += dx*dx*dx*w; mu["03"] += dy*dy*dy*w; mu["21"] += dx*dx*dy*w; mu["12"] += dx*dy*dy*w;
-    }
-  }
-  const eta = (p,q,v) => v / Math.pow(m00, 1 + (p+q)/2);
-  const n20 = eta(2,0,mu["20"]), n02 = eta(0,2,mu["02"]), n11 = eta(1,1,mu["11"]);
-  const n30 = eta(3,0,mu["30"]), n03 = eta(0,3,mu["03"]), n21 = eta(2,1,mu["21"]), n12 = eta(1,2,mu["12"]);
-  const h1 = n20 + n02;
-  const h2 = (n20 - n02) ** 2 + 4 * (n11 ** 2);
-  const h3 = (n30 - 3*n12) ** 2 + (3*n21 - n03) ** 2;
-  const h4 = (n30 + n12) ** 2 + (n21 + n03) ** 2;
-  const h5 = (n30 - 3*n12)*(n30 + n12)*((n30 + n12)**2 - 3*(n21 + n03)**2) + (3*n21 - n03)*(n21 + n03)*(3*(n30 + n12)**2 - (n21 + n03)**2);
-  const h6 = (n20 - n02)*((n30 + n12)**2 - (n21 + n03)**2) + 4*n11*(n30 + n12)*(n21 + n03);
-  const h7 = (3*n21 - n03)*(n30 + n12)*((n30 + n12)**2 - 3*(n21 + n03)**2) - (n30 - 3*n12)*(n21 + n03)*(3*(n30 + n12)**2 - (n21 + n03)**2);
-  return [h1,h2,h3,h4,Math.abs(h5),Math.abs(h6),Math.abs(h7)].map((v) => Math.sign(v) * Math.log10(1 + Math.abs(v)));
-}
-
-function scoreAlgo69(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputHu = huLikeMomentsFromCompensated(input.compensated, GRID_SIZE);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleHu = huLikeMomentsFromCompensated(sample.compensated, GRID_SIZE);
-    return { label: item.label, distance: featureDistance(inputHu, sampleHu) + Math.abs(input.strokeWidth - sample.strokeWidth) * 0.03 };
-  });
-  return classifyFromDistances(scored, 0.01, 2.2);
-}
-
-function ringMassDescriptor(comp, size, rings = 8, sectors = 12) {
-  const center = (size - 1) / 2;
-  const maxR = Math.sqrt(2) * center;
-  const out = new Array(rings * sectors).fill(0);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const v = comp[y * size + x];
-      if (v <= 0) continue;
-      const dx = x - center;
-      const dy = y - center;
-      const rBin = Math.min(rings - 1, Math.floor((Math.sqrt(dx * dx + dy * dy) / maxR) * rings));
-      const aBin = Math.min(sectors - 1, Math.max(0, Math.floor(((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * sectors)));
-      out[rBin * sectors + aBin] += v;
-    }
-  }
-  const norm = Math.sqrt(out.reduce((sum, v) => sum + v * v, 0));
-  return out.map((v) => v / Math.max(norm, 1e-6));
-}
-
-function compareRingDescriptors(a, b, sectors = 12) {
-  const rings = Math.floor(a.length / sectors);
-  let best = Number.POSITIVE_INFINITY;
-  for (let shift = 0; shift < sectors; shift += 1) {
-    const shifted = new Array(b.length).fill(0);
-    for (let r = 0; r < rings; r += 1) {
-      for (let s = 0; s < sectors; s += 1) {
-        shifted[r * sectors + s] = b[r * sectors + ((s + shift) % sectors)];
-      }
-    }
-    best = Math.min(best, featureDistance(a, shifted));
-    const flipped = new Array(shifted.length).fill(0);
-    for (let r = 0; r < rings; r += 1) {
-      for (let s = 0; s < sectors; s += 1) {
-        flipped[r * sectors + s] = shifted[r * sectors + ((sectors - s) % sectors)];
-      }
-    }
-    best = Math.min(best, featureDistance(a, flipped));
-  }
-  return best;
-}
-
-function scoreAlgo70(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputDesc = ringMassDescriptor(input.compensated, GRID_SIZE, 8, 16);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleDesc = ringMassDescriptor(sample.compensated, GRID_SIZE, 8, 16);
-    return { label: item.label, distance: compareRingDescriptors(inputDesc, sampleDesc, 16) };
-  });
-  return classifyFromDistances(scored, 0.01, 2.4);
-}
-
-function projectionSpectrum(comp, size, bins = 16) {
-  const rows = new Array(size).fill(0);
-  const cols = new Array(size).fill(0);
-  for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) { const v = comp[y * size + x]; rows[y] += v; cols[x] += v; }
-  const fold = (arr) => {
-    const out = new Array(bins).fill(0);
-    for (let i = 0; i < arr.length; i += 1) out[Math.min(bins - 1, Math.floor((i / arr.length) * bins))] += arr[i];
-    const norm = Math.sqrt(out.reduce((s, v) => s + v * v, 0));
-    return out.map((v) => v / Math.max(norm, 1e-6));
-  };
-  return [...fold(rows), ...fold(cols)].sort((a, b) => b - a);
-}
-
-function scoreAlgo71(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputSpec = projectionSpectrum(input.compensated, GRID_SIZE, 16);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleSpec = projectionSpectrum(sample.compensated, GRID_SIZE, 16);
-    const edgeDt = chamferDistance(input.edge, sample.edgeDt, sample.edge, input.edgeDt) / GRID_SIZE;
-    return { label: item.label, distance: featureDistance(inputSpec, sampleSpec) * 0.65 + edgeDt * 0.35 };
-  });
-  return classifyFromDistances(scored, 0.01, 2.1);
-}
-
-function contourPointCloud(edge, size) {
-  const points = [];
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      if (!edge[y * size + x]) continue;
-      points.push([x / Math.max(1, size - 1), y / Math.max(1, size - 1)]);
-    }
-  }
-  return points;
-}
-
-function directedChamfer(pointsA, pointsB) {
-  if (!pointsA.length || !pointsB.length) return 1;
-  let total = 0;
-  pointsA.forEach(([ax, ay]) => {
-    let best = Number.POSITIVE_INFINITY;
-    pointsB.forEach(([bx, by]) => {
-      const dx = ax - bx;
-      const dy = ay - by;
-      best = Math.min(best, Math.sqrt(dx * dx + dy * dy));
-    });
-    total += best;
-  });
-  return total / Math.max(1, pointsA.length);
-}
-
-function scoreAlgo72(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputPts = contourPointCloud(input.edge, GRID_SIZE);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const variants = generateTransformVariantsForSize(sample.edge, GRID_SIZE).map((variant) => contourPointCloud(variant.map((v) => (v >= 0.5 ? 1 : 0)), GRID_SIZE));
-    let best = Number.POSITIVE_INFINITY;
-    variants.forEach((pts) => {
-      const d = directedChamfer(inputPts, pts) + directedChamfer(pts, inputPts);
-      best = Math.min(best, d);
-    });
-    return { label: item.label, distance: best };
-  });
-  return classifyFromDistances(scored, 0.01, 2.3);
-}
-
-function frequencyMagnitudeDescriptor(comp, size, low = 5) {
-  const mags = [];
-  for (let u = 0; u < low; u += 1) {
-    for (let v = 0; v < low; v += 1) {
-      if (u === 0 && v === 0) continue;
-      let re = 0;
-      let im = 0;
-      for (let y = 0; y < size; y += 1) {
-        for (let x = 0; x < size; x += 1) {
-          const val = comp[y * size + x] || 0;
-          const angle = (-2 * Math.PI * ((u * x) / size + (v * y) / size));
-          re += val * Math.cos(angle);
-          im += val * Math.sin(angle);
-        }
-      }
-      mags.push(Math.sqrt(re * re + im * im));
-    }
-  }
-  mags.sort((a, b) => b - a);
-  const norm = Math.sqrt(mags.reduce((sum, value) => sum + value * value, 0));
-  return mags.map((v) => v / Math.max(norm, 1e-6));
-}
-
-function scoreAlgo73(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputFreq = frequencyMagnitudeDescriptor(input.compensated, GRID_SIZE, 5);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleFreq = frequencyMagnitudeDescriptor(sample.compensated, GRID_SIZE, 5);
-    const lineGap = featureDistance(extractLineFeaturesForSize(input.compensated, GRID_SIZE), extractLineFeaturesForSize(sample.compensated, GRID_SIZE));
-    return { label: item.label, distance: featureDistance(inputFreq, sampleFreq) * 0.72 + lineGap * 0.28 };
-  });
-  return classifyFromDistances(scored, 0.01, 2.25);
-}
-
-function skeletonProxy(comp, edgeDt, size) {
-  const out = new Array(size * size).fill(0);
-  for (let y = 1; y < size - 1; y += 1) {
-    for (let x = 1; x < size - 1; x += 1) {
-      const i = y * size + x;
-      if (comp[i] <= 0) continue;
-      const d = edgeDt[i];
-      if (d <= 0) continue;
-      let isPeak = true;
-      for (let oy = -1; oy <= 1; oy += 1) {
-        for (let ox = -1; ox <= 1; ox += 1) {
-          if (!ox && !oy) continue;
-          if (edgeDt[(y + oy) * size + (x + ox)] > d) isPeak = false;
-        }
-      }
-      if (isPeak) out[i] = 1;
-    }
-  }
-  return out;
-}
-
-function scoreAlgo74(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputSkeleton = skeletonProxy(input.compensated, input.edgeDt, GRID_SIZE);
-  const inputDesc = ringMassDescriptor(inputSkeleton, GRID_SIZE, 7, 14);
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const sampleSkeleton = skeletonProxy(sample.compensated, sample.edgeDt, GRID_SIZE);
-    const sampleDesc = ringMassDescriptor(sampleSkeleton, GRID_SIZE, 7, 14);
-    return { label: item.label, distance: compareRingDescriptors(inputDesc, sampleDesc, 14) };
-  });
-  return classifyFromDistances(scored, 0.01, 2.2);
-}
-
-function scoreAlgo75(input16, dataset16) {
-  const input = extractThicknessCompensatedFeatures(input16);
-  const inputInv = extractInvariantShapeDescriptor(input.compensated, GRID_SIZE);
-  const inputRaes = extractRAESDescriptorForSize(input.compensated, GRID_SIZE, { radialBins: 7, angleBins: 20 });
-  const scored = dataset16.map((item) => {
-    const sample = extractThicknessCompensatedFeatures(item.vector);
-    const dInv = featureDistance(inputInv, extractInvariantShapeDescriptor(sample.compensated, GRID_SIZE));
-    const dRaes = raesInvariantDistance(inputRaes, extractRAESDescriptorForSize(sample.compensated, GRID_SIZE, { radialBins: 7, angleBins: 20 }));
-    const widthGap = Math.abs(Math.log((input.strokeWidth + 0.1) / (sample.strokeWidth + 0.1)));
-    return { label: item.label, distance: dInv * 0.42 + dRaes * 0.5 + widthGap * 0.08 };
-  });
-  return classifyFromDistances(scored, 0.01, 2.55);
-}
-
-function scoreAlgo76(input16, dataset16, baseModels = null) {
-  const models = baseModels || [
-    { model: scoreAlgo67(input16, dataset16), weight: 1.05 },
-    { model: scoreAlgo68(input16, dataset16), weight: 1.0 },
-    { model: scoreAlgo69(input16, dataset16), weight: 0.95 },
-    { model: scoreAlgo70(input16, dataset16), weight: 1.0 },
-    { model: scoreAlgo71(input16, dataset16), weight: 0.9 },
-    { model: scoreAlgo72(input16, dataset16), weight: 1.0 },
-    { model: scoreAlgo73(input16, dataset16), weight: 0.95 },
-    { model: scoreAlgo74(input16, dataset16), weight: 0.9 },
-    { model: scoreAlgo75(input16, dataset16), weight: 1.05 },
-  ];
-
-  const scores = {};
-  models.forEach(({ model, weight }) => {
-    const confidenceWeight = Math.max(0.2, model.confidence / 100);
-    scores[model.label] = (scores[model.label] || 0) + weight * confidenceWeight;
-  });
-
-  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const probs = softmax(ranked.map(([, score]) => score * 2.4));
-  return {
-    label: ranked[0]?.[0] || "unknown",
-    confidence: Math.max(1, Math.min(99, Math.round((probs[0] || 0) * 100))),
-  };
-}
-
-
 function extractLineFeaturesForSize(vector, size) {
   const norm = normalizeVectorForSize(vector, size);
   const binary = norm.map((value) => (value >= 0.25 ? 1 : 0));
@@ -2333,12 +2021,6 @@ function runAlgorithms(vector, dataset) {
       { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
       { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
       { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
-      { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: "Need training data first", confidence: 0 },
-      { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: "Need training data first", confidence: 0 },
-      { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: "Need training data first", confidence: 0 },
-      { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: "Need training data first", confidence: 0 },
-      { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: "Need training data first", confidence: 0 },
-      { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2436,12 +2118,6 @@ function runAlgorithms(vector, dataset) {
   const algorithm64 = scoreAlgo64(normalizedInput, dataset);
   const algorithm65 = scoreAlgo65(normalizedInput, dataset);
   const algorithm66 = scoreAlgo66(normalizedInput, dataset);
-  const algorithm68 = scoreAlgo68(normalizedInput, dataset);
-  const algorithm69 = scoreAlgo69(normalizedInput, dataset);
-  const algorithm70 = scoreAlgo70(normalizedInput, dataset);
-  const algorithm71 = scoreAlgo71(normalizedInput, dataset);
-  const algorithm74 = scoreAlgo74(normalizedInput, dataset);
-  const algorithm75 = scoreAlgo75(normalizedInput, dataset);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -2451,12 +2127,6 @@ function runAlgorithms(vector, dataset) {
     { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
     { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
     { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
-    { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: algorithm68.label, confidence: algorithm68.confidence },
-    { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: algorithm69.label, confidence: algorithm69.confidence },
-    { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: algorithm70.label, confidence: algorithm70.confidence },
-    { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: algorithm71.label, confidence: algorithm71.confidence },
-    { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: algorithm74.label, confidence: algorithm74.confidence },
-    { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: algorithm75.label, confidence: algorithm75.confidence },
   ];
 }
 
@@ -2952,7 +2622,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, 68-71, and 74-75).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, and 66).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
