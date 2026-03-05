@@ -18,7 +18,7 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 68, 69, 70, 71, 74, 75];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -2333,16 +2333,12 @@ function runAlgorithms(vector, dataset) {
       { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
       { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
       { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
-      { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: "Need training data first", confidence: 0 },
       { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: "Need training data first", confidence: 0 },
       { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: "Need training data first", confidence: 0 },
       { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: "Need training data first", confidence: 0 },
       { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: "Need training data first", confidence: 0 },
-      { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: "Need training data first", confidence: 0 },
-      { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: "Need training data first", confidence: 0 },
       { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: "Need training data first", confidence: 0 },
       { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: "Need training data first", confidence: 0 },
-      { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2440,26 +2436,12 @@ function runAlgorithms(vector, dataset) {
   const algorithm64 = scoreAlgo64(normalizedInput, dataset);
   const algorithm65 = scoreAlgo65(normalizedInput, dataset);
   const algorithm66 = scoreAlgo66(normalizedInput, dataset);
-  const algorithm67 = scoreAlgo67(normalizedInput, dataset);
   const algorithm68 = scoreAlgo68(normalizedInput, dataset);
   const algorithm69 = scoreAlgo69(normalizedInput, dataset);
   const algorithm70 = scoreAlgo70(normalizedInput, dataset);
   const algorithm71 = scoreAlgo71(normalizedInput, dataset);
-  const algorithm72 = scoreAlgo72(normalizedInput, dataset);
-  const algorithm73 = scoreAlgo73(normalizedInput, dataset);
   const algorithm74 = scoreAlgo74(normalizedInput, dataset);
   const algorithm75 = scoreAlgo75(normalizedInput, dataset);
-  const algorithm76 = scoreAlgo76(normalizedInput, dataset, [
-    { model: algorithm67, weight: 1.05 },
-    { model: algorithm68, weight: 1.0 },
-    { model: algorithm69, weight: 0.95 },
-    { model: algorithm70, weight: 1.0 },
-    { model: algorithm71, weight: 0.9 },
-    { model: algorithm72, weight: 1.0 },
-    { model: algorithm73, weight: 0.95 },
-    { model: algorithm74, weight: 0.9 },
-    { model: algorithm75, weight: 1.05 },
-  ]);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
@@ -2469,16 +2451,12 @@ function runAlgorithms(vector, dataset) {
     { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
     { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
     { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
-    { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: algorithm67.label, confidence: algorithm67.confidence },
     { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: algorithm68.label, confidence: algorithm68.confidence },
     { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: algorithm69.label, confidence: algorithm69.confidence },
     { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: algorithm70.label, confidence: algorithm70.confidence },
     { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: algorithm71.label, confidence: algorithm71.confidence },
-    { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: algorithm72.label, confidence: algorithm72.confidence },
-    { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: algorithm73.label, confidence: algorithm73.confidence },
     { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: algorithm74.label, confidence: algorithm74.confidence },
     { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: algorithm75.label, confidence: algorithm75.confidence },
-    { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: algorithm76.label, confidence: algorithm76.confidence },
   ];
 }
 
@@ -2974,7 +2952,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, and 67-76).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, 68-71, and 74-75).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
