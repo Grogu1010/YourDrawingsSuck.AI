@@ -9,16 +9,14 @@ const OBJECTS = [
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
-const PENDING_SYNC_STORAGE_KEY = "yourdrawingssuckai.pendingSync.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
-const SERVER_BASE_URL = "http://localhost:8787";
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -67,7 +65,35 @@ function loadDataset() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeDrawingItem).filter(Boolean);
+    const downscale32To16 = (vector) => {
+      if (!Array.isArray(vector) || vector.length !== 32 * 32) return vector;
+      const output = new Array(GRID_SIZE * GRID_SIZE).fill(0);
+      for (let y = 0; y < GRID_SIZE; y += 1) {
+        for (let x = 0; x < GRID_SIZE; x += 1) {
+          let sum = 0;
+          for (let oy = 0; oy < 2; oy += 1) {
+            for (let ox = 0; ox < 2; ox += 1) {
+              const sourceX = x * 2 + ox;
+              const sourceY = y * 2 + oy;
+              sum += vector[sourceY * 32 + sourceX] || 0;
+            }
+          }
+          output[y * GRID_SIZE + x] = sum / 4;
+        }
+      }
+      return output;
+    };
+
+    return parsed.filter(
+      (item) =>
+        item &&
+        typeof item.label === "string" &&
+        Array.isArray(item.vector) &&
+        typeof item.ts === "number"
+    ).map((item) => ({
+      ...item,
+      vector: downscale32To16(item.vector),
+    })).filter((item) => item.vector.length === GRID_SIZE * GRID_SIZE);
   } catch {
     return [];
   }
@@ -75,94 +101,6 @@ function loadDataset() {
 
 function saveDataset(dataset) {
   setStorageItem(STORAGE_KEY, JSON.stringify(dataset));
-}
-
-
-function normalizeDrawingItem(item) {
-  if (!item || typeof item.label !== "string" || !Array.isArray(item.vector)) return null;
-
-  const downscale32To16 = (vector) => {
-    if (!Array.isArray(vector) || vector.length !== 32 * 32) return vector;
-    const output = new Array(GRID_SIZE * GRID_SIZE).fill(0);
-    for (let y = 0; y < GRID_SIZE; y += 1) {
-      for (let x = 0; x < GRID_SIZE; x += 1) {
-        let sum = 0;
-        for (let oy = 0; oy < 2; oy += 1) {
-          for (let ox = 0; ox < 2; ox += 1) {
-            const sourceX = x * 2 + ox;
-            const sourceY = y * 2 + oy;
-            sum += vector[sourceY * 32 + sourceX] || 0;
-          }
-        }
-        output[y * GRID_SIZE + x] = sum / 4;
-      }
-    }
-    return output;
-  };
-
-  const vector = downscale32To16(item.vector);
-  if (!Array.isArray(vector) || vector.length !== GRID_SIZE * GRID_SIZE) return null;
-
-  return {
-    label: item.label.trim().toLowerCase(),
-    vector,
-    ts: typeof item.ts === "number" ? item.ts : Date.now(),
-    id:
-      typeof item.id === "string" && item.id
-        ? item.id
-        : `${typeof item.ts === "number" ? item.ts : Date.now()}-${item.label}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-}
-
-function mergeDatasets(localDataset, remoteDataset) {
-  const byId = new Map();
-  [...localDataset, ...remoteDataset].forEach((item) => {
-    const normalized = normalizeDrawingItem(item);
-    if (!normalized) return;
-    const key = normalized.id || `${normalized.ts}-${normalized.label}`;
-    const existing = byId.get(key);
-    if (!existing || normalized.ts > existing.ts) {
-      byId.set(key, normalized);
-    }
-  });
-
-  return [...byId.values()].sort((a, b) => a.ts - b.ts).slice(-2000);
-}
-
-function loadPendingSyncQueue() {
-  try {
-    const raw = getStorageItem(PENDING_SYNC_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeDrawingItem).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function savePendingSyncQueue(queue) {
-  setStorageItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(queue));
-}
-
-async function fetchServerDataset() {
-  const response = await fetch(`${SERVER_BASE_URL}/api/drawings`, { method: "GET" });
-  if (!response.ok) throw new Error(`Server GET failed: ${response.status}`);
-  const payload = await response.json();
-  if (!Array.isArray(payload)) return [];
-  return payload.map(normalizeDrawingItem).filter(Boolean);
-}
-
-async function uploadDrawingToServer(drawing) {
-  const response = await fetch(`${SERVER_BASE_URL}/api/drawings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(drawing),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Server POST failed: ${response.status}`);
-  }
 }
 
 function createDefaultAlgorithmStats() {
@@ -1727,18 +1665,18 @@ function huLikeMomentsFromCompensated(comp, size) {
   for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) { const w = comp[y * size + x]; m00 += w; m10 += x * w; m01 += y * w; }
   if (m00 < 1e-6) return new Array(7).fill(0);
   const cx = m10 / m00, cy = m01 / m00;
-  const mu = {20:0,02:0,11:0,30:0,03:0,21:0,12:0};
+  const mu = { "20": 0, "02": 0, "11": 0, "30": 0, "03": 0, "21": 0, "12": 0 };
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const w = comp[y * size + x]; if (!w) continue;
       const dx = x - cx, dy = y - cy;
-      mu[20] += dx*dx*w; mu[02] += dy*dy*w; mu[11] += dx*dy*w;
-      mu[30] += dx*dx*dx*w; mu[03] += dy*dy*dy*w; mu[21] += dx*dx*dy*w; mu[12] += dx*dy*dy*w;
+      mu["20"] += dx*dx*w; mu["02"] += dy*dy*w; mu["11"] += dx*dy*w;
+      mu["30"] += dx*dx*dx*w; mu["03"] += dy*dy*dy*w; mu["21"] += dx*dx*dy*w; mu["12"] += dx*dy*dy*w;
     }
   }
   const eta = (p,q,v) => v / Math.pow(m00, 1 + (p+q)/2);
-  const n20 = eta(2,0,mu[20]), n02 = eta(0,2,mu[02]), n11 = eta(1,1,mu[11]);
-  const n30 = eta(3,0,mu[30]), n03 = eta(0,3,mu[03]), n21 = eta(2,1,mu[21]), n12 = eta(1,2,mu[12]);
+  const n20 = eta(2,0,mu["20"]), n02 = eta(0,2,mu["02"]), n11 = eta(1,1,mu["11"]);
+  const n30 = eta(3,0,mu["30"]), n03 = eta(0,3,mu["03"]), n21 = eta(2,1,mu["21"]), n12 = eta(1,2,mu["12"]);
   const h1 = n20 + n02;
   const h2 = (n20 - n02) ** 2 + 4 * (n11 ** 2);
   const h3 = (n30 - 3*n12) ** 2 + (3*n21 - n03) ** 2;
@@ -2164,13 +2102,153 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
 }
 
 function runAlgorithms(vector, dataset) {
-  const { hyperDraw, hyperDrawV2 } = runLiveAlgorithms(vector, dataset);
+  if (!dataset.length) {
+    return [
+      { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
+      { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
+      { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
+      { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
+      { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
+      { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
+      { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
+      { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: "Need training data first", confidence: 0 },
+      { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: "Need training data first", confidence: 0 },
+      { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: "Need training data first", confidence: 0 },
+      { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: "Need training data first", confidence: 0 },
+      { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: "Need training data first", confidence: 0 },
+      { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: "Need training data first", confidence: 0 },
+      { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: "Need training data first", confidence: 0 },
+      { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: "Need training data first", confidence: 0 },
+      { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: "Need training data first", confidence: 0 },
+      { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: "Need training data first", confidence: 0 },
+    ];
+  }
+
+  const normalizedInput = normalizeVector(vector);
+  const prototypesNormalized = buildLabelPrototypes(dataset.map((item) => ({ ...item, vector: normalizeVector(item.vector) })));
+
+  const normalizedDistances = dataset
+    .map((item) => ({
+      label: item.label,
+      distance: distance(normalizedInput, normalizeVector(item.vector)) / Math.sqrt(vector.length),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+
+  const algo1TopK = normalizedDistances.slice(0, Math.min(24, normalizedDistances.length));
+  const algo1LabelScores = algo1TopK.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1 / Math.max(item.distance + 0.08, 0.001);
+    return acc;
+  }, {});
+
+  Object.entries(prototypesNormalized).forEach(([label, prototype]) => {
+    const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+    const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
+    algo1LabelScores[label] = (algo1LabelScores[label] || 0) + prototypeVote * 0.35;
+  });
+
+  const algo1Ranked = Object.entries(algo1LabelScores).sort((a, b) => b[1] - a[1]);
+  const algo1Probs = softmax(algo1Ranked.map(([, score]) => score));
+  const algo1Guess = algo1Ranked[0]?.[0] || "unknown";
+  const algo1Confidence = Math.round((algo1Probs[0] || 0) * 100);
+
+  const prototypeNorm = Object.entries(prototypesNormalized)
+    .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  const inputFeatures = extractLineFeaturesForSize(normalizedInput, GRID_SIZE);
+  const prototypeFeaturesByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = extractLineFeaturesForSize(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+
+  const datasetLabelCounts = dataset.reduce((acc, item) => {
+    acc[item.label] = (acc[item.label] || 0) + 1;
+    return acc;
+  }, {});
+  const datasetSize = Math.max(1, dataset.length);
+
+  const scoreAlgo7Variant = ({
+    lineBlend = 0,
+    densityWeight = 0,
+    centerWeight = 0,
+    neighborDepth = 0,
+    balancePenalty = 0,
+    temperature = 2,
+  }) => {
+    const topNeighbors = normalizedDistances.slice(0, Math.min(neighborDepth, normalizedDistances.length));
+    const ranked = Object.entries(prototypesNormalized)
+      .map(([label, prototype]) => {
+        const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+        const prototypeFeatures = prototypeFeaturesByLabel[label];
+        const lineDistance = featureDistance(inputFeatures, prototypeFeatures);
+        const densityGap = Math.abs((inputFeatures[4] || 0) - (prototypeFeatures[4] || 0));
+        const centerGap =
+          Math.abs((inputFeatures[5] || 0.5) - (prototypeFeatures[5] || 0.5)) +
+          Math.abs((inputFeatures[6] || 0.5) - (prototypeFeatures[6] || 0.5));
+
+        const blendedDistance =
+          prototypeDistance * (1 - lineBlend) +
+          lineDistance * lineBlend +
+          densityGap * densityWeight +
+          centerGap * centerWeight;
+
+        const baseScore = 1 / Math.max(0.001, blendedDistance + 0.05);
+        const neighborScore = topNeighbors.reduce((bonus, neighbor, index) => {
+          if (neighbor.label !== label) return bonus;
+          return bonus + 0.05 / (index + 1);
+        }, 0);
+        const priorPenalty = ((datasetLabelCounts[label] || 0) / datasetSize) * balancePenalty;
+
+        return {
+          label,
+          score: baseScore + neighborScore - priorPenalty,
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const probabilities = softmax(ranked.map((entry) => entry.score * temperature));
+    return {
+      label: ranked[0]?.label || "unknown",
+      confidence: Math.max(1, Math.min(99, Math.round((probabilities[0] || 0) * 100))),
+    };
+  };
+
+  const algorithm45 = scoreAlgo7Variant({ neighborDepth: 4 });
+  const algorithm57 = scoreAlgo7Variant({ neighborDepth: 4, lineBlend: 0.06, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.35 });
+  const algorithm64 = scoreAlgo64(normalizedInput, dataset);
+  const algorithm65 = scoreAlgo65(normalizedInput, dataset);
+  const algorithm66 = scoreAlgo66(normalizedInput, dataset);
+  const algorithm67 = scoreAlgo67(normalizedInput, dataset);
+  const algorithm68 = scoreAlgo68(normalizedInput, dataset);
+  const algorithm69 = scoreAlgo69(normalizedInput, dataset);
+  const algorithm70 = scoreAlgo70(normalizedInput, dataset);
+  const algorithm71 = scoreAlgo71(normalizedInput, dataset);
+  const algorithm72 = scoreAlgo72(normalizedInput, dataset);
+  const algorithm73 = scoreAlgo73(normalizedInput, dataset);
+  const algorithm74 = scoreAlgo74(normalizedInput, dataset);
+  const algorithm75 = scoreAlgo75(normalizedInput, dataset);
+  const algorithm76 = scoreAlgo76(normalizedInput, dataset);
+
   return [
-    { id: 1, name: "Algorithm 1 (Current)", label: hyperDraw.label, confidence: hyperDraw.confidence },
-    { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: hyperDrawV2.label, confidence: hyperDrawV2.confidence },
+    { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
+    { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
+    { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
+    { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
+    { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
+    { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
+    { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
+    { id: 67, name: "Algorithm 67 (Edge-compensated transform lattice)", label: algorithm67.label, confidence: algorithm67.confidence },
+    { id: 68, name: "Algorithm 68 (Centroid radial signature matcher)", label: algorithm68.label, confidence: algorithm68.confidence },
+    { id: 69, name: "Algorithm 69 (Hu-like compensated moment invariants)", label: algorithm69.label, confidence: algorithm69.confidence },
+    { id: 70, name: "Algorithm 70 (Ring-sector mass alignment)", label: algorithm70.label, confidence: algorithm70.confidence },
+    { id: 71, name: "Algorithm 71 (Projection-spectrum + edge chamfer)", label: algorithm71.label, confidence: algorithm71.confidence },
+    { id: 72, name: "Algorithm 72 (Contour cloud mirrored chamfer)", label: algorithm72.label, confidence: algorithm72.confidence },
+    { id: 73, name: "Algorithm 73 (Low-frequency magnitude signature)", label: algorithm73.label, confidence: algorithm73.confidence },
+    { id: 74, name: "Algorithm 74 (Skeleton proxy ring context)", label: algorithm74.label, confidence: algorithm74.confidence },
+    { id: 75, name: "Algorithm 75 (Invariant descriptor fusion)", label: algorithm75.label, confidence: algorithm75.confidence },
+    { id: 76, name: "Algorithm 76 (Consensus of 67-75)", label: algorithm76.label, confidence: algorithm76.confidence },
   ];
 }
-
 
 
 
@@ -2203,7 +2281,6 @@ function App() {
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
-  const [pendingSyncQueue, setPendingSyncQueue] = useState(() => loadPendingSyncQueue());
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
@@ -2213,48 +2290,6 @@ function App() {
   useEffect(() => {
     saveCompareStats(compareStats);
   }, [compareStats]);
-
-  useEffect(() => {
-    savePendingSyncQueue(pendingSyncQueue);
-  }, [pendingSyncQueue]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const syncAll = async () => {
-      try {
-        const remote = await fetchServerDataset();
-        if (cancelled) return;
-
-        const merged = mergeDatasets(dataset, remote);
-        setDataset(merged);
-        saveDataset(merged);
-
-        if (pendingSyncQueue.length > 0) {
-          for (const drawing of pendingSyncQueue) {
-            await uploadDrawingToServer(drawing);
-          }
-
-          if (cancelled) return;
-          setPendingSyncQueue([]);
-
-          const refreshedRemote = await fetchServerDataset();
-          if (cancelled) return;
-          const mergedAfterUpload = mergeDatasets(merged, refreshedRemote);
-          setDataset(mergedAfterUpload);
-          saveDataset(mergedAfterUpload);
-        }
-      } catch {
-      }
-    };
-
-    syncAll();
-    const interval = window.setInterval(syncAll, 10000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [pendingSyncQueue.length]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2276,8 +2311,6 @@ function App() {
     ctx.strokeStyle = isErasing ? "#ffffff" : "#111827";
     ctx.lineWidth = isErasing ? 32 : 20;
   }, [isErasing]);
-
-
 
   const getPoint = (event) => {
     const canvas = canvasRef.current;
@@ -2512,25 +2545,12 @@ function App() {
       return next;
     });
 
-    const drawing = normalizeDrawingItem({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      label: prompt,
-      vector: vec,
-      ts: Date.now(),
-    });
-    const updated = mergeDatasets(dataset, [drawing]);
+    const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
-
-    uploadDrawingToServer(drawing)
-      .catch(() => {
-        setPendingSyncQueue((previous) => mergeDatasets(previous, [drawing]));
-      });
-
-
     setPrompt(randomPrompt());
     clearCanvas();
-    setStatusMessage("Done! Saved locally and queued for server sync if needed.");
+    setStatusMessage("Done! Added to dataset and moved to the next prompt.");
   };
 
   const promptCounts = useMemo(
@@ -2551,8 +2571,6 @@ function App() {
         <button className={`secondary ${activeTab === "draw" ? "active" : ""}`} onClick={() => setActiveTab("draw")}>Draw Lab</button>
         <button className={`secondary ${activeTab === "articles" ? "active" : ""}`} onClick={() => setActiveTab("articles")}>Articles</button>
       </div>
-
-
 
       {activeTab === "draw" ? (
       <div className="grid">
@@ -2637,7 +2655,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for active algorithms (1 and 7).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, and 67-76).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
