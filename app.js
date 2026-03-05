@@ -10,6 +10,9 @@ const OBJECTS = [
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
 const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
+const USER_PROFILE_STORAGE_KEY = "yourdrawingssuckai.userProfile.v1";
+const SERVER_URL_STORAGE_KEY = "yourdrawingssuckai.serverUrl.v1";
+const SERVER_SYNC_REV_STORAGE_KEY = "yourdrawingssuckai.serverSyncRevision.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
@@ -134,6 +137,71 @@ function loadAlgorithmStats() {
 
 function saveAlgorithmStats(stats) {
   setStorageItem(ALGO_STATS_STORAGE_KEY, JSON.stringify(stats));
+}
+
+function randomId() {
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getServerBaseUrl() {
+  const configured =
+    (typeof window !== "undefined" && window.__YDS_SERVER_URL__) ||
+    getStorageItem(SERVER_URL_STORAGE_KEY) ||
+    "";
+  return configured.trim().replace(/\/$/, "");
+}
+
+function loadUserProfile() {
+  try {
+    const raw = getStorageItem(USER_PROFILE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.clientId === "string" && typeof parsed.name === "string" && parsed.name.trim()) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Use fallback profile creation.
+  }
+
+  let nextName = "";
+  while (!nextName.trim()) {
+    const entered = window.prompt("Please enter a name") || "";
+    nextName = entered.trim();
+  }
+
+  const profile = { clientId: randomId(), name: nextName };
+  setStorageItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  return profile;
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) throw new Error(`Server error (${response.status})`);
+  return response.json();
+}
+
+async function syncWithServer({ profile, drawings, forceFullSync = false }) {
+  const baseUrl = getServerBaseUrl();
+  if (!baseUrl) return null;
+
+  const revision = forceFullSync
+    ? null
+    : getStorageItem(SERVER_SYNC_REV_STORAGE_KEY);
+
+  const data = await postJson(`${baseUrl}/api/sync`, {
+    profile,
+    drawings,
+    revision,
+  });
+
+  if (data?.revision) setStorageItem(SERVER_SYNC_REV_STORAGE_KEY, data.revision);
+  return data;
 }
 
 
@@ -2262,6 +2330,7 @@ function App() {
   const drawingRevisionRef = useRef(0);
   const lastGuessedRevisionRef = useRef(-1);
   const guessTimeoutRef = useRef(null);
+  const profileRef = useRef(loadUserProfile());
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
@@ -2282,6 +2351,55 @@ function App() {
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
+
+  useEffect(() => {
+    const profile = profileRef.current;
+    const currentDatasetWithProfile = dataset.map((item) => ({ ...item, authorName: profile.name }));
+
+    syncWithServer({
+      profile,
+      drawings: currentDatasetWithProfile,
+      forceFullSync: true,
+    })
+      .then((result) => {
+        if (!result || !Array.isArray(result.drawings)) return;
+        const merged = result.drawings
+          .filter((item) => item && typeof item.label === "string" && Array.isArray(item.vector) && typeof item.ts === "number")
+          .slice(-2000);
+        setDataset(merged);
+        saveDataset(merged);
+      })
+      .catch(() => {
+        // Silent fallback: app keeps working fully offline/local-only.
+      });
+
+    window.changeDrawingPlayerName = async (nextNameRaw) => {
+      const nextName = `${nextNameRaw || ""}`.trim();
+      if (!nextName) return false;
+
+      profileRef.current = { ...profileRef.current, name: nextName };
+      setStorageItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(profileRef.current));
+
+      const renamedLocal = loadDataset().map((item) => ({ ...item, authorName: nextName }));
+      saveDataset(renamedLocal);
+      setDataset(renamedLocal);
+
+      try {
+        await syncWithServer({
+          profile: profileRef.current,
+          drawings: renamedLocal,
+          forceFullSync: true,
+        });
+      } catch {
+        // Local rename still succeeds even if server is currently unavailable.
+      }
+      return true;
+    };
+
+    return () => {
+      delete window.changeDrawingPlayerName;
+    };
+  }, []);
 
   useEffect(() => {
     saveAlgorithmStats(algorithmStats);
@@ -2505,35 +2623,37 @@ function App() {
 
     const { vec } = drawingStats;
     const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(vec, preparedLiveDataset);
-    const results = runAlgorithms(vec, dataset);
+    const results = devMode ? runAlgorithms(vec, dataset) : [];
 
     setCompareResults({
       hyperDraw: { label: hyperDraw.label },
       hyperDrawV2: { label: hyperDrawV2.label },
     });
     setLastDoneResults(results);
-    setAlgorithmStats((previous) =>
-      previous.map((algo) => {
-        const result = results.find((entry) => entry.id === algo.id);
-        const gotItRight = result?.label === prompt;
-        return {
-          ...algo,
-          attempts: algo.attempts + 1,
-          correct: algo.correct + (gotItRight ? 1 : 0),
-        };
-      })
-    );
-    setSessionAlgorithmStats((previous) =>
-      previous.map((algo) => {
-        const result = results.find((entry) => entry.id === algo.id);
-        const gotItRight = result?.label === prompt;
-        return {
-          ...algo,
-          attempts: algo.attempts + 1,
-          correct: algo.correct + (gotItRight ? 1 : 0),
-        };
-      })
-    );
+    if (devMode) {
+      setAlgorithmStats((previous) =>
+        previous.map((algo) => {
+          const result = results.find((entry) => entry.id === algo.id);
+          const gotItRight = result?.label === prompt;
+          return {
+            ...algo,
+            attempts: algo.attempts + 1,
+            correct: algo.correct + (gotItRight ? 1 : 0),
+          };
+        })
+      );
+      setSessionAlgorithmStats((previous) =>
+        previous.map((algo) => {
+          const result = results.find((entry) => entry.id === algo.id);
+          const gotItRight = result?.label === prompt;
+          return {
+            ...algo,
+            attempts: algo.attempts + 1,
+            correct: algo.correct + (gotItRight ? 1 : 0),
+          };
+        })
+      );
+    }
 
     setCompareStats((previous) => {
       const next = { ...previous, attempts: previous.attempts + 1 };
@@ -2545,9 +2665,18 @@ function App() {
       return next;
     });
 
-    const updated = [...dataset, { label: prompt, vector: vec, ts: Date.now() }].slice(-2000);
+    const profile = profileRef.current;
+    const updated = [
+      ...dataset,
+      { id: randomId(), label: prompt, vector: vec, ts: Date.now(), authorName: profile.name, clientId: profile.clientId },
+    ].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
+
+    syncWithServer({ profile, drawings: updated }).catch(() => {
+      // Keep local save successful even if server is unavailable.
+    });
+
     setPrompt(randomPrompt());
     clearCanvas();
     setStatusMessage("Done! Added to dataset and moved to the next prompt.");
