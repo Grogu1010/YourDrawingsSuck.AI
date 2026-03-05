@@ -222,15 +222,23 @@ async function getOrCreateCryptoContext() {
 }
 
 async function encryptDrawingEntry(entry, cryptoContext) {
+  return encryptPayload(
+    {
+      id: entry.id,
+      label: entry.label,
+      vector: entry.vector,
+      ts: entry.ts,
+      authorName: entry.authorName,
+      clientId: entry.clientId,
+    },
+    cryptoContext,
+    entry.id
+  );
+}
+
+async function encryptPayload(payload, cryptoContext, id = randomId()) {
   const ivBytes = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = JSON.stringify({
-    id: entry.id,
-    label: entry.label,
-    vector: entry.vector,
-    ts: entry.ts,
-    authorName: entry.authorName,
-    clientId: entry.clientId,
-  });
+  const plaintext = JSON.stringify(payload);
 
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: ivBytes },
@@ -239,7 +247,7 @@ async function encryptDrawingEntry(entry, cryptoContext) {
   );
 
   return {
-    id: entry.id,
+    id,
     iv: bytesToBase64(ivBytes),
     enc: bytesToBase64(new Uint8Array(encrypted)),
     ver: 1,
@@ -266,6 +274,18 @@ async function decryptDrawingEntry(encryptedEntry, cryptoContext) {
     };
   } catch {
     return null;
+  }
+}
+
+async function fetchPublicIpAddress() {
+  try {
+    const response = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
+    if (!response.ok) throw new Error("ip fetch failed");
+    const data = await response.json();
+    if (typeof data?.ip !== "string" || !data.ip.trim()) throw new Error("missing ip");
+    return data.ip.trim();
+  } catch {
+    return "unknown";
   }
 }
 
@@ -321,9 +341,15 @@ async function syncWithServer({ profile, drawings, cryptoContext, forceFullSync 
     : getStorageItem(SERVER_SYNC_REV_STORAGE_KEY);
 
   const encryptedDrawings = await Promise.all(drawings.map((item) => encryptDrawingEntry(item, cryptoContext)));
+  const encryptedIp = await encryptPayload(
+    { ip: await fetchPublicIpAddress(), clientId: profile.clientId, ts: Date.now() },
+    cryptoContext,
+    `${profile.clientId}_ip`
+  );
 
   const data = await postJson(`${baseUrl}/api/sync`, {
     profile,
+    encryptedIp,
     drawings: encryptedDrawings,
     revision,
   });
@@ -2479,6 +2505,7 @@ function App() {
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
+  const [onlinePlayers, setOnlinePlayers] = useState([]);
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
@@ -2498,6 +2525,8 @@ function App() {
       })
       .then((result) => {
         if (!result || !Array.isArray(result.drawings)) return;
+
+        setOnlinePlayers(Array.isArray(result.online) ? result.online : []);
 
         return Promise.all(
           result.drawings
@@ -2911,6 +2940,11 @@ function App() {
             <div className="stat"><div>Total drawings</div><div className="big">{dataset.length}</div></div>
             <div className="stat"><div>Objects learned</div><div className="big">{Object.keys(promptCounts).length}</div></div>
           </div>
+
+          <h3>Online now ({onlinePlayers.length})</h3>
+          <ul>
+            {onlinePlayers.length === 0 ? <li>No active players right now.</li> : onlinePlayers.map((player) => <li key={player.clientId}>{player.name}</li>)}
+          </ul>
 
           <div className="stats">
             <div className="stat"><div>Compare rounds</div><div className="big">{compareStats.attempts}</div></div>
