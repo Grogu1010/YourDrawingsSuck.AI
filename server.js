@@ -24,14 +24,6 @@ function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 }
 
-function getClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.socket.remoteAddress || 'unknown';
-}
-
 function sendJson(res, code, payload) {
   res.writeHead(code, {
     'Content-Type': 'application/json',
@@ -42,22 +34,29 @@ function sendJson(res, code, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function sanitizeDrawing(item, profile, ip) {
-  if (!item || typeof item.label !== 'string' || !Array.isArray(item.vector) || typeof item.ts !== 'number') return null;
+function sanitizeDrawing(item, profile) {
+  if (
+    !item ||
+    typeof item.id !== 'string' ||
+    typeof item.enc !== 'string' ||
+    typeof item.iv !== 'string' ||
+    typeof item.ver !== 'number'
+  ) {
+    return null;
+  }
   return {
-    id: typeof item.id === 'string' && item.id ? item.id : `${item.ts}_${Math.random().toString(36).slice(2, 9)}`,
-    label: item.label,
-    vector: item.vector.slice(0, 256),
-    ts: item.ts,
+    id: item.id,
+    enc: item.enc,
+    iv: item.iv,
+    ver: item.ver,
+    keyHint: typeof item.keyHint === 'string' ? item.keyHint : '',
     clientId: profile.clientId,
     authorName: profile.name,
-    ip,
   };
 }
 
 function handleSync(req, res, body) {
   const db = readDb();
-  const ip = getClientIp(req);
   const profile = body?.profile;
 
   if (!profile || typeof profile.clientId !== 'string' || typeof profile.name !== 'string' || !profile.name.trim()) {
@@ -65,13 +64,13 @@ function handleSync(req, res, body) {
     return;
   }
 
-  const normalizedProfile = { clientId: profile.clientId, name: profile.name.trim(), ip };
+  const normalizedProfile = { clientId: profile.clientId, name: profile.name.trim() };
   db.profiles[profile.clientId] = normalizedProfile;
 
   const incomingDrawings = Array.isArray(body?.drawings) ? body.drawings : [];
   const existingIds = new Set(db.drawings.map((drawing) => drawing.id));
   incomingDrawings.forEach((item) => {
-    const sanitized = sanitizeDrawing(item, normalizedProfile, ip);
+    const sanitized = sanitizeDrawing(item, normalizedProfile);
     if (!sanitized || existingIds.has(sanitized.id)) return;
     existingIds.add(sanitized.id);
     db.drawings.push(sanitized);
@@ -79,7 +78,7 @@ function handleSync(req, res, body) {
 
   db.drawings = db.drawings.map((drawing) => {
     if (drawing.clientId !== normalizedProfile.clientId) return drawing;
-    return { ...drawing, authorName: normalizedProfile.name, ip };
+    return { ...drawing, authorName: normalizedProfile.name };
   }).slice(-50000);
 
   db.revision = Date.now();

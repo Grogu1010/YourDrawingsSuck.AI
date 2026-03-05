@@ -13,6 +13,7 @@ const ALGO_STATS_STORAGE_KEY = "yourdrawingssuckai.algorithmStats.v1";
 const USER_PROFILE_STORAGE_KEY = "yourdrawingssuckai.userProfile.v1";
 const SERVER_URL_STORAGE_KEY = "yourdrawingssuckai.serverUrl.v1";
 const SERVER_SYNC_REV_STORAGE_KEY = "yourdrawingssuckai.serverSyncRevision.v1";
+const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
@@ -143,6 +144,131 @@ function randomId() {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function bytesToBase64(bytes) {
+  let binary = "";
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  const output = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    output[i] = binary.charCodeAt(i);
+  }
+  return output;
+}
+
+function loadCryptoConfig() {
+  try {
+    const raw = getStorageItem(DRAWING_CRYPTO_CONFIG_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.salt !== "string" || typeof parsed.keyHint !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveCryptoConfig(config) {
+  setStorageItem(DRAWING_CRYPTO_CONFIG_STORAGE_KEY, JSON.stringify(config));
+}
+
+async function getOrCreateCryptoContext() {
+  if (!window.crypto?.subtle) throw new Error("This browser cannot encrypt drawings.");
+
+  let config = loadCryptoConfig();
+  let passphrase = "";
+
+  while (!passphrase.trim()) {
+    const entered = window.prompt("Create a drawing passphrase. The server will store encrypted blobs only.") || "";
+    passphrase = entered.trim();
+  }
+
+  if (!config) {
+    const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+    config = {
+      salt: bytesToBase64(saltBytes),
+      keyHint: bytesToBase64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(passphrase))).slice(0, 22),
+    };
+    saveCryptoConfig(config);
+  }
+
+  const imported = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(passphrase),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToBytes(config.salt),
+      iterations: 210000,
+      hash: "SHA-256",
+    },
+    imported,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+
+  return { key, keyHint: config.keyHint };
+}
+
+async function encryptDrawingEntry(entry, cryptoContext) {
+  const ivBytes = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = JSON.stringify({
+    id: entry.id,
+    label: entry.label,
+    vector: entry.vector,
+    ts: entry.ts,
+    authorName: entry.authorName,
+    clientId: entry.clientId,
+  });
+
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: ivBytes },
+    cryptoContext.key,
+    new TextEncoder().encode(plaintext)
+  );
+
+  return {
+    id: entry.id,
+    iv: bytesToBase64(ivBytes),
+    enc: bytesToBase64(new Uint8Array(encrypted)),
+    ver: 1,
+    keyHint: cryptoContext.keyHint,
+  };
+}
+
+async function decryptDrawingEntry(encryptedEntry, cryptoContext) {
+  try {
+    const plaintextBytes = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64ToBytes(encryptedEntry.iv) },
+      cryptoContext.key,
+      base64ToBytes(encryptedEntry.enc)
+    );
+    const parsed = JSON.parse(new TextDecoder().decode(plaintextBytes));
+    if (!parsed || typeof parsed.label !== "string" || !Array.isArray(parsed.vector) || typeof parsed.ts !== "number") return null;
+    return {
+      id: typeof parsed.id === "string" ? parsed.id : encryptedEntry.id,
+      label: parsed.label,
+      vector: parsed.vector,
+      ts: parsed.ts,
+      authorName: typeof parsed.authorName === "string" ? parsed.authorName : "anonymous",
+      clientId: typeof parsed.clientId === "string" ? parsed.clientId : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function getServerBaseUrl() {
   const configured =
     (typeof window !== "undefined" && window.__YDS_SERVER_URL__) ||
@@ -186,7 +312,7 @@ async function postJson(url, payload) {
   return response.json();
 }
 
-async function syncWithServer({ profile, drawings, forceFullSync = false }) {
+async function syncWithServer({ profile, drawings, cryptoContext, forceFullSync = false }) {
   const baseUrl = getServerBaseUrl();
   if (!baseUrl) return null;
 
@@ -194,9 +320,11 @@ async function syncWithServer({ profile, drawings, forceFullSync = false }) {
     ? null
     : getStorageItem(SERVER_SYNC_REV_STORAGE_KEY);
 
+  const encryptedDrawings = await Promise.all(drawings.map((item) => encryptDrawingEntry(item, cryptoContext)));
+
   const data = await postJson(`${baseUrl}/api/sync`, {
     profile,
-    drawings,
+    drawings: encryptedDrawings,
     revision,
   });
 
@@ -2331,6 +2459,7 @@ function App() {
   const lastGuessedRevisionRef = useRef(-1);
   const guessTimeoutRef = useRef(null);
   const profileRef = useRef(loadUserProfile());
+  const cryptoContextRef = useRef(null);
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
@@ -2354,20 +2483,31 @@ function App() {
 
   useEffect(() => {
     const profile = profileRef.current;
-    const currentDatasetWithProfile = dataset.map((item) => ({ ...item, authorName: profile.name }));
 
-    syncWithServer({
-      profile,
-      drawings: currentDatasetWithProfile,
-      forceFullSync: true,
-    })
+    getOrCreateCryptoContext()
+      .then((cryptoContext) => {
+        cryptoContextRef.current = cryptoContext;
+        const currentDatasetWithProfile = dataset.map((item) => ({ ...item, authorName: profile.name }));
+
+        return syncWithServer({
+          profile,
+          drawings: currentDatasetWithProfile,
+          cryptoContext,
+          forceFullSync: true,
+        });
+      })
       .then((result) => {
         if (!result || !Array.isArray(result.drawings)) return;
-        const merged = result.drawings
-          .filter((item) => item && typeof item.label === "string" && Array.isArray(item.vector) && typeof item.ts === "number")
-          .slice(-2000);
-        setDataset(merged);
-        saveDataset(merged);
+
+        return Promise.all(
+          result.drawings
+            .filter((item) => item && typeof item.enc === "string" && typeof item.iv === "string")
+            .map((item) => decryptDrawingEntry(item, cryptoContextRef.current))
+        ).then((decrypted) => {
+          const merged = decrypted.filter(Boolean).slice(-2000);
+          setDataset(merged);
+          saveDataset(merged);
+        });
       })
       .catch(() => {
         // Silent fallback: app keeps working fully offline/local-only.
@@ -2385,9 +2525,11 @@ function App() {
       setDataset(renamedLocal);
 
       try {
+        if (!cryptoContextRef.current) return true;
         await syncWithServer({
           profile: profileRef.current,
           drawings: renamedLocal,
+          cryptoContext: cryptoContextRef.current,
           forceFullSync: true,
         });
       } catch {
@@ -2673,9 +2815,13 @@ function App() {
     setDataset(updated);
     saveDataset(updated);
 
-    syncWithServer({ profile, drawings: updated }).catch(() => {
+    if (cryptoContextRef.current) {
+      syncWithServer({ profile, drawings: updated, cryptoContext: cryptoContextRef.current }).catch(() => {
+        // Keep local save successful even if server is unavailable.
+      });
+    } else {
       // Keep local save successful even if server is unavailable.
-    });
+    }
 
     setPrompt(randomPrompt());
     clearCanvas();
@@ -2694,7 +2840,7 @@ function App() {
   return (
     <main className="app">
       <h1>YourDrawingsSuck.AI</h1>
-      <p className="subtitle">Get a random object, draw it, and let our hilariously judgy AI guess from community sketches.</p>
+      <p className="subtitle">Get a random object, draw it, and let our hilariously judgy AI guess from community sketches. Server sync is end-to-end encrypted in your browser.</p>
 
       <div className="row">
         <button className={`secondary ${activeTab === "draw" ? "active" : ""}`} onClick={() => setActiveTab("draw")}>Draw Lab</button>
