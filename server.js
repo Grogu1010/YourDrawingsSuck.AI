@@ -13,10 +13,12 @@ function readDb() {
     return {
       profiles: parsed.profiles && typeof parsed.profiles === 'object' ? parsed.profiles : {},
       drawings: Array.isArray(parsed.drawings) ? parsed.drawings : [],
+      encryptedIps: parsed.encryptedIps && typeof parsed.encryptedIps === 'object' ? parsed.encryptedIps : {},
+      activity: parsed.activity && typeof parsed.activity === 'object' ? parsed.activity : {},
       revision: typeof parsed.revision === 'number' ? parsed.revision : Date.now(),
     };
   } catch {
-    return { profiles: {}, drawings: [], revision: Date.now() };
+    return { profiles: {}, drawings: [], encryptedIps: {}, activity: {}, revision: Date.now() };
   }
 }
 
@@ -66,6 +68,24 @@ function handleSync(req, res, body) {
 
   const normalizedProfile = { clientId: profile.clientId, name: profile.name.trim() };
   db.profiles[profile.clientId] = normalizedProfile;
+  db.activity[profile.clientId] = Date.now();
+
+  const encryptedIp = body?.encryptedIp;
+  if (
+    encryptedIp &&
+    typeof encryptedIp.id === 'string' &&
+    typeof encryptedIp.enc === 'string' &&
+    typeof encryptedIp.iv === 'string' &&
+    typeof encryptedIp.ver === 'number'
+  ) {
+    db.encryptedIps[profile.clientId] = {
+      id: encryptedIp.id,
+      enc: encryptedIp.enc,
+      iv: encryptedIp.iv,
+      ver: encryptedIp.ver,
+      keyHint: typeof encryptedIp.keyHint === 'string' ? encryptedIp.keyHint : '',
+    };
+  }
 
   const incomingDrawings = Array.isArray(body?.drawings) ? body.drawings : [];
   const existingIds = new Set(db.drawings.map((drawing) => drawing.id));
@@ -84,10 +104,19 @@ function handleSync(req, res, body) {
   db.revision = Date.now();
   writeDb(db);
 
+  const cutoff = Date.now() - 2 * 60 * 1000;
+  const online = Object.entries(db.activity)
+    .filter(([, ts]) => typeof ts === 'number' && ts >= cutoff)
+    .map(([clientId]) => ({
+      clientId,
+      name: db.profiles[clientId]?.name || 'anonymous',
+    }));
+
   sendJson(res, 200, {
     ok: true,
     revision: String(db.revision),
     drawings: db.drawings,
+    online,
   });
 }
 
