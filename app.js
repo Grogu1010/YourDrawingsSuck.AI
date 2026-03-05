@@ -1727,18 +1727,18 @@ function huLikeMomentsFromCompensated(comp, size) {
   for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) { const w = comp[y * size + x]; m00 += w; m10 += x * w; m01 += y * w; }
   if (m00 < 1e-6) return new Array(7).fill(0);
   const cx = m10 / m00, cy = m01 / m00;
-  const mu = { "20": 0, "02": 0, "11": 0, "30": 0, "03": 0, "21": 0, "12": 0 };
+  const mu = {20:0,02:0,11:0,30:0,03:0,21:0,12:0};
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const w = comp[y * size + x]; if (!w) continue;
       const dx = x - cx, dy = y - cy;
-      mu["20"] += dx*dx*w; mu["02"] += dy*dy*w; mu["11"] += dx*dy*w;
-      mu["30"] += dx*dx*dx*w; mu["03"] += dy*dy*dy*w; mu["21"] += dx*dx*dy*w; mu["12"] += dx*dy*dy*w;
+      mu[20] += dx*dx*w; mu[02] += dy*dy*w; mu[11] += dx*dy*w;
+      mu[30] += dx*dx*dx*w; mu[03] += dy*dy*dy*w; mu[21] += dx*dx*dy*w; mu[12] += dx*dy*dy*w;
     }
   }
   const eta = (p,q,v) => v / Math.pow(m00, 1 + (p+q)/2);
-  const n20 = eta(2,0,mu["20"]), n02 = eta(0,2,mu["02"]), n11 = eta(1,1,mu["11"]);
-  const n30 = eta(3,0,mu["30"]), n03 = eta(0,3,mu["03"]), n21 = eta(2,1,mu["21"]), n12 = eta(1,2,mu["12"]);
+  const n20 = eta(2,0,mu[20]), n02 = eta(0,2,mu[02]), n11 = eta(1,1,mu[11]);
+  const n30 = eta(3,0,mu[30]), n03 = eta(0,3,mu[03]), n21 = eta(2,1,mu[21]), n12 = eta(1,2,mu[12]);
   const h1 = n20 + n02;
   const h2 = (n20 - n02) ** 2 + 4 * (n11 ** 2);
   const h3 = (n30 - 3*n12) ** 2 + (3*n21 - n03) ** 2;
