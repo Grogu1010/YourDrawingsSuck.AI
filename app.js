@@ -2122,8 +2122,8 @@ function scoreAlgo75(input16, dataset16) {
   return classifyFromDistances(scored, 0.01, 2.55);
 }
 
-function scoreAlgo76(input16, dataset16) {
-  const models = [
+function scoreAlgo76(input16, dataset16, baseModels = null) {
+  const models = baseModels || [
     { model: scoreAlgo67(input16, dataset16), weight: 1.05 },
     { model: scoreAlgo68(input16, dataset16), weight: 1.0 },
     { model: scoreAlgo69(input16, dataset16), weight: 0.95 },
@@ -2449,7 +2449,17 @@ function runAlgorithms(vector, dataset) {
   const algorithm73 = scoreAlgo73(normalizedInput, dataset);
   const algorithm74 = scoreAlgo74(normalizedInput, dataset);
   const algorithm75 = scoreAlgo75(normalizedInput, dataset);
-  const algorithm76 = scoreAlgo76(normalizedInput, dataset);
+  const algorithm76 = scoreAlgo76(normalizedInput, dataset, [
+    { model: algorithm67, weight: 1.05 },
+    { model: algorithm68, weight: 1.0 },
+    { model: algorithm69, weight: 0.95 },
+    { model: algorithm70, weight: 1.0 },
+    { model: algorithm71, weight: 0.9 },
+    { model: algorithm72, weight: 1.0 },
+    { model: algorithm73, weight: 0.95 },
+    { model: algorithm74, weight: 0.9 },
+    { model: algorithm75, weight: 1.05 },
+  ]);
 
   return [
     { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
