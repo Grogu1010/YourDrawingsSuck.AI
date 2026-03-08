@@ -2015,21 +2015,41 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
   }
 
   const normalizedInput = normalizeVector(vector);
-  const normalizedDistances = normalizedDataset
-    .map((item) => ({
-      label: item.label,
-      distance: distance(normalizedInput, item.normalizedVector) / Math.sqrt(vector.length),
-    }))
-    .sort((a, b) => a.distance - b.distance);
+  const distanceScale = Math.sqrt(vector.length);
+  const maxNeighbors = 24;
+  const algo1TopK = [];
 
-  const algo1TopK = normalizedDistances.slice(0, Math.min(24, normalizedDistances.length));
+  normalizedDataset.forEach((item) => {
+    const candidate = {
+      label: item.label,
+      distance: distance(normalizedInput, item.normalizedVector) / distanceScale,
+    };
+
+    let inserted = false;
+    for (let i = 0; i < algo1TopK.length; i += 1) {
+      if (candidate.distance < algo1TopK[i].distance) {
+        algo1TopK.splice(i, 0, candidate);
+        inserted = true;
+        break;
+      }
+    }
+
+    if (!inserted && algo1TopK.length < maxNeighbors) {
+      algo1TopK.push(candidate);
+    }
+
+    if (algo1TopK.length > maxNeighbors) {
+      algo1TopK.pop();
+    }
+  });
+
   const algo1LabelScores = algo1TopK.reduce((acc, item) => {
     acc[item.label] = (acc[item.label] || 0) + 1 / Math.max(item.distance + 0.08, 0.001);
     return acc;
   }, {});
 
   Object.entries(prototypesNormalized).forEach(([label, prototype]) => {
-    const prototypeDistance = distance(normalizedInput, prototype) / Math.sqrt(vector.length);
+    const prototypeDistance = distance(normalizedInput, prototype) / distanceScale;
     const prototypeVote = 1 / Math.max(0.001, prototypeDistance + 0.06);
     algo1LabelScores[label] = (algo1LabelScores[label] || 0) + prototypeVote * 0.35;
   });
@@ -2041,9 +2061,13 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
     confidence: Math.round((algo1Probs[0] || 0) * 100),
   };
 
-  const prototypeNorm = Object.entries(prototypesNormalized)
-    .map(([label, proto]) => ({ label, distance: distance(normalizedInput, proto) / Math.sqrt(vector.length) }))
-    .sort((a, b) => a.distance - b.distance)[0];
+  let prototypeNorm = null;
+  Object.entries(prototypesNormalized).forEach(([label, proto]) => {
+    const d = distance(normalizedInput, proto) / distanceScale;
+    if (!prototypeNorm || d < prototypeNorm.distance) {
+      prototypeNorm = { label, distance: d };
+    }
+  });
 
   const hyperDrawV2 = {
     label: prototypeNorm?.label || "unknown",
