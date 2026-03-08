@@ -2269,6 +2269,8 @@ function runAlgorithms(vector, dataset) {
 function App() {
   const canvasRef = useRef(null);
   const offscreenCanvasRef = useRef(null);
+  const canvasRectRef = useRef(null);
+  const canvasContextRef = useRef(null);
   const isDrawingRef = useRef(false);
   const strokesRef = useRef([]);
   const activeStrokeRef = useRef(null);
@@ -2378,6 +2380,8 @@ function App() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    canvasContextRef.current = ctx;
+
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.lineCap = "round";
@@ -2395,7 +2399,7 @@ function App() {
 
   const getPoint = (event) => {
     const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
+    const rect = canvasRectRef.current || canvas.getBoundingClientRect();
 
     if (event.touches?.length) {
       const touch = event.touches[0];
@@ -2413,7 +2417,9 @@ function App() {
 
   const startDrawing = (event) => {
     event.preventDefault();
-    const ctx = canvasRef.current.getContext("2d");
+    const canvas = canvasRef.current;
+    const ctx = canvasContextRef.current || canvas.getContext("2d");
+    canvasRectRef.current = canvas.getBoundingClientRect();
     const point = getPoint(event);
     isDrawingRef.current = true;
     ctx.beginPath();
@@ -2425,7 +2431,7 @@ function App() {
   const draw = (event) => {
     if (!isDrawingRef.current) return;
     event.preventDefault();
-    const ctx = canvasRef.current.getContext("2d");
+    const ctx = canvasContextRef.current || canvasRef.current.getContext("2d");
     const point = getPoint(event);
     ctx.lineTo(point.x, point.y);
     ctx.stroke();
@@ -2433,7 +2439,7 @@ function App() {
     drawingRevisionRef.current += 1;
 
     const now = Date.now();
-    if (now - lastLiveGuessAtRef.current >= 80) {
+    if (now - lastLiveGuessAtRef.current >= 140) {
       lastLiveGuessAtRef.current = now;
       scheduleGuess();
     }
@@ -2442,8 +2448,9 @@ function App() {
   const stopDrawing = () => {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
-    canvasRef.current.getContext("2d").closePath();
+    (canvasContextRef.current || canvasRef.current.getContext("2d")).closePath();
     activeStrokeRef.current = null;
+    canvasRectRef.current = null;
   };
 
   const clearCanvas = () => {
@@ -2547,6 +2554,8 @@ function App() {
 
   const scheduleGuess = (immediate = false) => {
     if (drawingRevisionRef.current === lastGuessedRevisionRef.current && !immediate) return;
+
+    if (!immediate && guessTimeoutRef.current) return;
 
     if (guessTimeoutRef.current) {
       clearTimeout(guessTimeoutRef.current);
