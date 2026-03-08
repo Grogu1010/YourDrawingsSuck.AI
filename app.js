@@ -2271,7 +2271,6 @@ function App() {
   const isDrawingRef = useRef(false);
   const strokesRef = useRef([]);
   const activeStrokeRef = useRef(null);
-  const lastLiveGuessAtRef = useRef(0);
   const drawingRevisionRef = useRef(0);
   const lastGuessedRevisionRef = useRef(-1);
   const guessTimeoutRef = useRef(null);
@@ -2436,12 +2435,6 @@ function App() {
     ctx.stroke();
     activeStrokeRef.current?.points?.push(point);
     drawingRevisionRef.current += 1;
-
-    const now = Date.now();
-    if (now - lastLiveGuessAtRef.current >= 140) {
-      lastLiveGuessAtRef.current = now;
-      scheduleGuess();
-    }
   };
 
   const stopDrawing = () => {
