@@ -21,7 +21,7 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 72];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 72, 77];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1929,6 +1929,160 @@ function extractScaleAwareLineLengthFeatures(vector, size = GRID_SIZE) {
   };
 }
 
+function extractAlgorithm77Architecture(vector, size = GRID_SIZE) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const binary = normalized.map((value) => (value >= 0.22 ? 1 : 0));
+  const occupied = [];
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!binary[y * size + x]) continue;
+      occupied.push({ x, y });
+    }
+  }
+
+  if (!occupied.length) {
+    return {
+      lines: [],
+      relations: [],
+      density: 0,
+      symmetryX: 0,
+      symmetryY: 0,
+      lineCountNorm: 0,
+    };
+  }
+
+  const xs = occupied.map((point) => point.x);
+  const ys = occupied.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Math.max(1, maxX - minX + 1);
+  const height = Math.max(1, maxY - minY + 1);
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const scale = Math.max(width, height, 1);
+  const keySet = new Set(occupied.map((point) => `${point.x},${point.y}`));
+
+  const normalizePoint = (x, y) => ({
+    x: (x - centerX) / scale,
+    y: (y - centerY) / scale,
+  });
+
+  const normalizedPoints = occupied.map((point) => normalizePoint(point.x, point.y));
+  const tolerance = 1 / Math.max(2, scale * 0.9);
+  const symmetryXHits = normalizedPoints.reduce((hits, point) => {
+    const mirroredKey = `${Math.round(centerX - (point.x * scale))},${Math.round(centerY + (point.y * scale))}`;
+    return hits + (keySet.has(mirroredKey) ? 1 : 0);
+  }, 0);
+  const symmetryYHits = normalizedPoints.reduce((hits, point) => {
+    const mirroredKey = `${Math.round(centerX + (point.x * scale))},${Math.round(centerY - (point.y * scale))}`;
+    return hits + (keySet.has(mirroredKey) ? 1 : 0);
+  }, 0);
+
+  const directions = [
+    { dx: 1, dy: 0 },
+    { dx: 0, dy: 1 },
+    { dx: 1, dy: 1 },
+    { dx: 1, dy: -1 },
+  ];
+  const segments = [];
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!keySet.has(`${x},${y}`)) continue;
+      directions.forEach(({ dx, dy }) => {
+        const prevX = x - dx;
+        const prevY = y - dy;
+        if (keySet.has(`${prevX},${prevY}`)) return;
+        let run = 0;
+        let curX = x;
+        let curY = y;
+        while (keySet.has(`${curX},${curY}`)) {
+          run += 1;
+          curX += dx;
+          curY += dy;
+        }
+        if (run < 2) return;
+        const endX = x + dx * (run - 1);
+        const endY = y + dy * (run - 1);
+        const nx1 = (x - centerX) / scale;
+        const ny1 = (y - centerY) / scale;
+        const nx2 = (endX - centerX) / scale;
+        const ny2 = (endY - centerY) / scale;
+        const lineLength = Math.hypot(nx2 - nx1, ny2 - ny1);
+        const midpoint = { x: (nx1 + nx2) / 2, y: (ny1 + ny2) / 2 };
+        const angle = Math.atan2(ny2 - ny1, nx2 - nx1);
+        const orientation = ((angle % Math.PI) + Math.PI) % Math.PI;
+        const straightness = Math.max(0.6, Math.min(1, run / (run + 1)));
+        segments.push({ length: lineLength, orientation, midpoint, straightness });
+      });
+    }
+  }
+
+  const rankedSegments = segments
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 24);
+
+  const relations = [];
+  for (let i = 0; i < rankedSegments.length; i += 1) {
+    for (let j = i + 1; j < rankedSegments.length; j += 1) {
+      const a = rankedSegments[i];
+      const b = rankedSegments[j];
+      relations.push({
+        lengthRatio: Math.min(a.length, b.length) / Math.max(0.001, Math.max(a.length, b.length)),
+        angleDelta: Math.min(
+          Math.abs(a.orientation - b.orientation),
+          Math.PI - Math.abs(a.orientation - b.orientation)
+        ) / Math.PI,
+        lineDistance: Math.min(2, Math.hypot(a.midpoint.x - b.midpoint.x, a.midpoint.y - b.midpoint.y)),
+      });
+    }
+  }
+
+  return {
+    lines: rankedSegments,
+    relations: relations
+      .sort((a, b) => a.lineDistance - b.lineDistance)
+      .slice(0, 60),
+    density: occupied.length / (size * size),
+    symmetryX: symmetryXHits / Math.max(1, occupied.length),
+    symmetryY: symmetryYHits / Math.max(1, occupied.length),
+    lineCountNorm: Math.min(1, rankedSegments.length / 24),
+    tolerance,
+  };
+}
+
+function algorithm77ArchitectureDistance(a, b) {
+  const lineMatchCost = a.lines.reduce((sum, line) => {
+    const best = b.lines.reduce((bestDistance, candidate) => {
+      const lengthGap = Math.abs(line.length - candidate.length);
+      const straightGap = Math.abs(line.straightness - candidate.straightness);
+      return Math.min(bestDistance, lengthGap * 0.58 + straightGap * 0.42);
+    }, 1.2);
+    return sum + best;
+  }, 0) / Math.max(1, a.lines.length);
+
+  const relationMatchCost = a.relations.reduce((sum, relation) => {
+    const best = b.relations.reduce((bestDistance, candidate) => {
+      const ratioGap = Math.abs(relation.lengthRatio - candidate.lengthRatio);
+      const angleGap = Math.abs(relation.angleDelta - candidate.angleDelta);
+      const distanceGap = Math.abs(relation.lineDistance - candidate.lineDistance);
+      return Math.min(bestDistance, ratioGap * 0.36 + angleGap * 0.34 + distanceGap * 0.3);
+    }, 1.2);
+    return sum + best;
+  }, 0) / Math.max(1, a.relations.length);
+
+  const symmetryGap =
+    Math.abs(a.symmetryX - b.symmetryX) * 0.5 +
+    Math.abs(a.symmetryY - b.symmetryY) * 0.5;
+  const densityGap = Math.abs(a.density - b.density);
+  const lineCountGap = Math.abs(a.lineCountNorm - b.lineCountNorm);
+
+  return lineMatchCost * 0.46 + relationMatchCost * 0.39 + symmetryGap * 0.08 + densityGap * 0.04 + lineCountGap * 0.03;
+}
+
 function minTransformDistanceForSize(a, b, size = GRID_SIZE) {
   const aVariants = generateTransformVariantsForSize(a, size);
   const bVariants = generateTransformVariantsForSize(b, size);
@@ -2084,6 +2238,7 @@ function runAlgorithms(vector, dataset) {
       { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: "Need training data first", confidence: 0 },
+      { id: 77, name: "Algorithm 77 (line-architecture matcher)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2129,6 +2284,12 @@ function runAlgorithms(vector, dataset) {
     return acc;
   }, {});
   const datasetSize = Math.max(1, dataset.length);
+
+  const algorithm77Input = extractAlgorithm77Architecture(normalizedInput, GRID_SIZE);
+  const algorithm77PrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = extractAlgorithm77Architecture(prototype, GRID_SIZE);
+    return acc;
+  }, {});
 
   const invariantInput = extractScaleAwareLineLengthFeatures(normalizedInput, GRID_SIZE);
   const invariantPrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
@@ -2253,11 +2414,27 @@ function runAlgorithms(vector, dataset) {
   const algorithm74 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.22, densityWeight: 0.03, temperature: 2.3 });
   const algorithm75 = scoreAlgo45TransformVariant({ neighborDepth: 7, lineBlend: 0.16, densityWeight: 0.04, balancePenalty: 0.14, temperature: 2.35 });
   const algorithm76 = scoreAlgo45TransformVariant({ neighborDepth: 8, lineBlend: 0.18, densityWeight: 0.05, balancePenalty: 0.08, centerWeight: 0.03, temperature: 2.3 });
+  const algorithm77Ranked = Object.entries(algorithm77PrototypeByLabel)
+    .map(([label, architecture]) => {
+      const architectureDistance = algorithm77ArchitectureDistance(algorithm77Input, architecture);
+      const neighborBoost = normalizedDistances
+        .slice(0, Math.min(8, normalizedDistances.length))
+        .reduce((bonus, neighbor, index) => bonus + (neighbor.label === label ? 0.07 / (index + 1) : 0), 0);
+      const score = 1 / Math.max(0.001, architectureDistance + 0.045) + neighborBoost;
+      return { label, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const algorithm77Probs = softmax(algorithm77Ranked.map((entry) => entry.score * 2.25));
+  const algorithm77 = {
+    label: algorithm77Ranked[0]?.label || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((algorithm77Probs[0] || 0) * 100))),
+  };
 
   return [
     { id: 1, name: "Algorithm 1 (v1 current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (v2 normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: algorithm72.label, confidence: algorithm72.confidence },
+    { id: 77, name: "Algorithm 77 (line-architecture matcher)", label: algorithm77.label, confidence: algorithm77.confidence },
   ];
 }
 
@@ -2816,7 +2993,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, and 72).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, 72, and 77).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
