@@ -3061,6 +3061,40 @@ function App() {
       : "Done! Added to dataset and moved to the next prompt.");
   };
 
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (activeTab !== "draw") return;
+      if (event.isComposing) return;
+
+      const target = event.target;
+      const tagName = target?.tagName;
+      const isEditable =
+        target?.isContentEditable ||
+        tagName === "INPUT" ||
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT";
+      if (isEditable) return;
+
+      const isUndoShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z";
+      if (isUndoShortcut) {
+        event.preventDefault();
+        stopDrawing();
+        undoLastStroke();
+        return;
+      }
+
+      const isFinishShortcut = event.key === "Enter" || event.key === "NumpadEnter";
+      if (isFinishShortcut && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        stopDrawing();
+        saveDrawing();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTab, saveDrawing]);
+
   const promptCounts = useMemo(
     () =>
       dataset.reduce((acc, item) => {
@@ -3113,6 +3147,7 @@ function App() {
               </button>
             )}
           </div>
+          <p className="subtitle">Shortcuts: Ctrl/Cmd + Z = Undo, Enter = Done</p>
           {statusMessage && <p className="status-msg">{statusMessage}</p>}
         </section>
 
