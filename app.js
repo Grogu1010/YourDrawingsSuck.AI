@@ -37,6 +37,32 @@ const V2X_ARTICLE_PARAGRAPHS = [
   "This is still not perfect, and v3 will refresh the algorithm end-to-end with these goals built in from the ground up, but v2X is a strong step in the right direction today.",
 ];
 
+const V2_ARTICLE_PARAGRAPHS = [
+  "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
+  "After collecting and replaying over 500 reference drawings through identical evaluation prompts, v1 correctly predicted the drawing only 14% of the time, which made it clear we needed a deeper redesign instead of a cosmetic patch.",
+  "The original v1 stack worked by converting each canvas into a 16x16 intensity grid, flattening that into a 256-value vector, and running nearest-neighbor comparisons against the dataset for whichever label had the closest geometric distance.",
+  "In short form, v1 leaned heavily on Euclidean distance d(x,y)=sqrt(SUM_i((x_i-y_i)^2)) and softmax confidence p_i=exp(s_i)/SUM_j exp(s_j), where lower distance implied higher score and higher score implied confidence.",
+  "That pipeline was quick, but it was fragile because the model overweighted literal pixel placement: tiny translation shifts, sketch size changes, or slight rotation could make two semantically similar drawings appear mathematically far apart.",
+  "We tested a variety of approaches inspired by experiments from the earlier model generations, including weighted center-priority matching and a multi-scale, rotation-aware nearest search to stabilize guesses under messy real drawing behavior.",
+  "Another interesting approach emphasized line-profile statistics instead of raw pixels, using row and column density transitions to recognize structure, which improved shape understanding on symbols with strong silhouettes.",
+  "Even with those gains, isolated methods still struggled with confidence calibration and class dominance, so we combined the strongest pieces into a single golden approach and then tuned it repeatedly against the same shared benchmark set.",
+  "That final v2 blend moved benchmark accuracy from 14% to a staggering 38% on the exact same 500+ references, which validated that the gains were real and not just a side effect of easier data.",
+  "From an inference-speed perspective, v2 now reaches a stable high-confidence answer in almost half the time under normal play loops, with an observed 53% faster convergence during repeated draw-and-guess cycles.",
+  "One major v2 difference is normalization before comparison: we compute a drawing bounding box, recenter the active signal, and scale strokes into a consistent frame before applying weighted distance and k-nearest voting.",
+  "We also broaden the candidate comparison set by evaluating transformed variants and feature vectors, then fusing predictions so no single brittle metric can dominate final output.",
+  "Bias reduction was another direct objective because users reported v1 repeatedly falling back to bird, cloud, or cup regardless of context, which is a classic mode-collapse symptom in small sketch datasets.",
+  "To counter that, v2 introduces balancing logic that reduces over-frequent label momentum and rewards agreement across diverse feature views, making it less likely to guess the simplest or most over-trained class by default.",
+  "Bias avoidance is still not perfect, but it is far better than v1 and notably more likely to land on the correct answer instead of the easiest answer.",
+  "The team also improved robustness around stroke noise, partial erasing, and off-center doodles so users can draw naturally without having to game the classifier.",
+  "Importantly, every claimed gain in this write-up comes from matched reference materials and repeated evaluation procedures, keeping comparisons fair between v1 and v2.",
+  "The writer of this article would like to thank the team for their hard work, patience, and relentless iteration in creating something truly extraordinary for the community.",
+];
+
+const ARTICLE_ENTRIES = [
+  { id: "v2x", title: "HyperDraw v2X Update", subtitle: "A short breakdown of what changed, and what comes next.", paragraphs: V2X_ARTICLE_PARAGRAPHS },
+  { id: "v2", title: "HyperDraw v2 Deep Dive", subtitle: "The full original v2 research write-up.", paragraphs: V2_ARTICLE_PARAGRAPHS },
+];
+
 function getStorageItem(key) {
   try {
     return localStorage.getItem(key);
@@ -2267,6 +2293,7 @@ function App() {
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const [activeTab, setActiveTab] = useState("draw");
+  const [expandedArticleId, setExpandedArticleId] = useState(null);
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
@@ -2845,6 +2872,46 @@ function App() {
       </div>
       ) : (
         <section className="card article-card">
+          <h2>HyperDraw Articles</h2>
+          <p className="subtitle">Preview each update below, then click to expand the full article.</p>
+          <div className="article-list">
+            {ARTICLE_ENTRIES.map((entry) => {
+              const isExpanded = expandedArticleId === entry.id;
+              const previewParagraphs = entry.paragraphs.slice(0, 2);
+              const remainingParagraphs = entry.paragraphs.slice(2);
+              return (
+                <article
+                  key={entry.id}
+                  className={`article-preview ${isExpanded ? "expanded" : ""}`}
+                  onClick={() => setExpandedArticleId((current) => (current === entry.id ? null : entry.id))}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setExpandedArticleId((current) => (current === entry.id ? null : entry.id));
+                    }
+                  }}
+                  aria-expanded={isExpanded}
+                >
+                  <div className="article-preview-header">
+                    <div>
+                      <h3>{entry.title}</h3>
+                      <p className="subtitle">{entry.subtitle}</p>
+                    </div>
+                    <span className="expand-pill">{isExpanded ? "Hide" : "Read more"}</span>
+                  </div>
+                  {previewParagraphs.map((paragraph, index) => (
+                    <p key={`${entry.id}-preview-${index}`}>{paragraph}</p>
+                  ))}
+                  {!isExpanded && <p className="expand-hint">Click anywhere on this card to expand.</p>}
+                  {isExpanded && remainingParagraphs.map((paragraph, index) => (
+                    <p key={`${entry.id}-full-${index}`}>{paragraph}</p>
+                  ))}
+                </article>
+              );
+            })}
+          </div>
           <h2>HyperDraw v2X Update</h2>
           <p className="subtitle">A short breakdown of what changed, and what comes next.</p>
           <article>
