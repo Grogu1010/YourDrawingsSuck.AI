@@ -23,7 +23,7 @@ const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 const MIN_POINT_DISTANCE_SQ = 9;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 72, 77];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 72, 77, 78, 79, 80];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -2121,6 +2121,263 @@ function algorithm77ArchitectureDistance(a, b) {
   return lineMatchCost * 0.46 + relationMatchCost * 0.39 + symmetryGap * 0.08 + densityGap * 0.04 + lineCountGap * 0.03;
 }
 
+function buildAlgorithm78RaySignature(vector, size = GRID_SIZE, angleBins = 36) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const center = centroidForSize(normalized, size);
+  const maxRadius = Math.sqrt(2) * (size / 2);
+  const signature = new Array(angleBins).fill(0);
+
+  for (let angleIndex = 0; angleIndex < angleBins; angleIndex += 1) {
+    const angle = (angleIndex / angleBins) * 2 * Math.PI;
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    let firstHit = 1;
+    let lastHit = 0;
+    let accumulated = 0;
+    let hits = 0;
+
+    for (let step = 0; step <= size * 2; step += 1) {
+      const radius = (step / (size * 2)) * maxRadius;
+      const x = center.x + dx * radius;
+      const y = center.y + dy * radius;
+      const value = sampleBilinear(normalized, size, x, y);
+      if (value <= 0.08) continue;
+      const normalizedRadius = radius / Math.max(maxRadius, 1e-6);
+      firstHit = Math.min(firstHit, normalizedRadius);
+      lastHit = Math.max(lastHit, normalizedRadius);
+      accumulated += value;
+      hits += 1;
+    }
+
+    const occupancy = hits / Math.max(1, size * 2);
+    signature[angleIndex] = (1 - firstHit) * 0.42 + lastHit * 0.36 + occupancy * 0.22 + accumulated * 0.04;
+  }
+
+  const norm = Math.sqrt(signature.reduce((sum, value) => sum + value * value, 0));
+  return signature.map((value) => value / Math.max(norm, 1e-6));
+}
+
+function algorithm78SignatureDistance(a, b) {
+  const count = Math.min(a.length, b.length);
+  let best = Number.POSITIVE_INFINITY;
+
+  for (let shift = 0; shift < count; shift += 1) {
+    let directSum = 0;
+    let flippedSum = 0;
+    for (let i = 0; i < count; i += 1) {
+      const shifted = b[(i + shift) % count];
+      const flipped = b[(count - ((i + shift) % count)) % count];
+      const directGap = a[i] - shifted;
+      const flippedGap = a[i] - flipped;
+      directSum += directGap * directGap;
+      flippedSum += flippedGap * flippedGap;
+    }
+    best = Math.min(best, Math.sqrt(directSum / Math.max(1, count)), Math.sqrt(flippedSum / Math.max(1, count)));
+  }
+
+  return best;
+}
+
+function buildAlgorithm79PairGeometryDescriptor(vector, size = GRID_SIZE, bins = 18) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const points = [];
+  let minX = size;
+  let minY = size;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = normalized[y * size + x] || 0;
+      if (value <= 0.2) continue;
+      points.push({ x, y, value });
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (!points.length) {
+    return { distanceHist: new Array(bins).fill(0), areaHist: new Array(bins).fill(0), density: 0 };
+  }
+
+  const stride = Math.max(1, Math.floor(points.length / 96));
+  const sampled = points.filter((_, index) => index % stride === 0).slice(0, 96);
+  const width = Math.max(1, maxX - minX + 1);
+  const height = Math.max(1, maxY - minY + 1);
+  const scale = Math.max(width, height, 1);
+  const distanceHist = new Array(bins).fill(0);
+  const areaHist = new Array(bins).fill(0);
+
+  for (let i = 0; i < sampled.length; i += 1) {
+    const a = sampled[i];
+    for (let j = i + 1; j < sampled.length; j += 1) {
+      const b = sampled[j];
+      const normalizedDistance = Math.min(0.9999, Math.hypot(a.x - b.x, a.y - b.y) / scale);
+      distanceHist[Math.floor(normalizedDistance * bins)] += 1;
+
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      const radial = Math.min(0.9999, Math.hypot(midX - (minX + maxX) / 2, midY - (minY + maxY) / 2) / scale);
+      areaHist[Math.floor(radial * bins)] += 1;
+    }
+  }
+
+  const normalizeHist = (hist) => {
+    const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+    return hist.map((value) => value / Math.max(norm, 1e-6));
+  };
+
+  return {
+    distanceHist: normalizeHist(distanceHist),
+    areaHist: normalizeHist(areaHist),
+    density: points.length / Math.max(1, size * size),
+  };
+}
+
+function algorithm79DescriptorDistance(a, b) {
+  let distanceSum = 0;
+  for (let i = 0; i < a.distanceHist.length; i += 1) {
+    const d = a.distanceHist[i] - b.distanceHist[i];
+    distanceSum += d * d;
+  }
+
+  let areaSum = 0;
+  for (let i = 0; i < a.areaHist.length; i += 1) {
+    const d = a.areaHist[i] - b.areaHist[i];
+    areaSum += d * d;
+  }
+
+  const densityGap = Math.abs(a.density - b.density);
+  return Math.sqrt(distanceSum / Math.max(1, a.distanceHist.length)) * 0.62
+    + Math.sqrt(areaSum / Math.max(1, a.areaHist.length)) * 0.3
+    + densityGap * 0.08;
+}
+
+function thinBinaryMap(binary, size = GRID_SIZE, maxPasses = 12) {
+  const output = [...binary];
+  const neighborOffsets = [
+    [0, -1], [1, -1], [1, 0], [1, 1],
+    [0, 1], [-1, 1], [-1, 0], [-1, -1],
+  ];
+  const get = (x, y) => (x < 0 || y < 0 || x >= size || y >= size ? 0 : output[y * size + x]);
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let changed = false;
+    [0, 1].forEach((phase) => {
+      const toRemove = [];
+      for (let y = 1; y < size - 1; y += 1) {
+        for (let x = 1; x < size - 1; x += 1) {
+          if (get(x, y) === 0) continue;
+          const neighbors = neighborOffsets.map(([dx, dy]) => get(x + dx, y + dy));
+          const count = neighbors.reduce((sum, value) => sum + value, 0);
+          if (count < 2 || count > 6) continue;
+
+          let transitions = 0;
+          for (let i = 0; i < neighbors.length; i += 1) {
+            const cur = neighbors[i];
+            const next = neighbors[(i + 1) % neighbors.length];
+            if (cur === 0 && next === 1) transitions += 1;
+          }
+          if (transitions !== 1) continue;
+
+          const p2 = neighbors[0];
+          const p4 = neighbors[2];
+          const p6 = neighbors[4];
+          const p8 = neighbors[6];
+          const phaseCondition = phase === 0
+            ? (p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0)
+            : (p2 * p4 * p8 === 0 && p2 * p6 * p8 === 0);
+          if (!phaseCondition) continue;
+          toRemove.push(y * size + x);
+        }
+      }
+
+      if (toRemove.length) {
+        changed = true;
+        toRemove.forEach((index) => {
+          output[index] = 0;
+        });
+      }
+    });
+
+    if (!changed) break;
+  }
+
+  return output;
+}
+
+function buildAlgorithm80TopologyDescriptor(vector, size = GRID_SIZE) {
+  const normalized = normalizeVectorForSize(vector, size);
+  const binary = normalized.map((value) => (value > 0.2 ? 1 : 0));
+  const thin = thinBinaryMap(binary, size);
+  const points = [];
+  const endpoints = [];
+  const junctions = [];
+  const branchHist = new Array(5).fill(0);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (thin[y * size + x] === 0) continue;
+      points.push({ x, y });
+      let neighbors = 0;
+      for (let ny = -1; ny <= 1; ny += 1) {
+        for (let nx = -1; nx <= 1; nx += 1) {
+          if (nx === 0 && ny === 0) continue;
+          const tx = x + nx;
+          const ty = y + ny;
+          if (tx < 0 || ty < 0 || tx >= size || ty >= size) continue;
+          neighbors += thin[ty * size + tx];
+        }
+      }
+      branchHist[Math.min(branchHist.length - 1, neighbors)] += 1;
+      if (neighbors === 1) endpoints.push({ x, y });
+      if (neighbors >= 3) junctions.push({ x, y });
+    }
+  }
+
+  const keypoints = [...endpoints, ...junctions].slice(0, 20);
+  const pairHist = new Array(12).fill(0);
+  const scale = Math.max(1, size - 1);
+  for (let i = 0; i < keypoints.length; i += 1) {
+    for (let j = i + 1; j < keypoints.length; j += 1) {
+      const d = Math.min(0.9999, Math.hypot(keypoints[i].x - keypoints[j].x, keypoints[i].y - keypoints[j].y) / scale);
+      pairHist[Math.floor(d * pairHist.length)] += 1;
+    }
+  }
+
+  const normalizeHist = (hist) => {
+    const norm = Math.sqrt(hist.reduce((sum, value) => sum + value * value, 0));
+    return hist.map((value) => value / Math.max(norm, 1e-6));
+  };
+
+  return {
+    branchHist: normalizeHist(branchHist),
+    pairHist: normalizeHist(pairHist),
+    endpointRatio: endpoints.length / Math.max(1, points.length),
+    junctionRatio: junctions.length / Math.max(1, points.length),
+    strokeDensity: points.length / Math.max(1, size * size),
+  };
+}
+
+function algorithm80TopologyDistance(a, b) {
+  const histDistance = (histA, histB) => {
+    let sum = 0;
+    for (let i = 0; i < histA.length; i += 1) {
+      const d = histA[i] - histB[i];
+      sum += d * d;
+    }
+    return Math.sqrt(sum / Math.max(1, histA.length));
+  };
+
+  return histDistance(a.branchHist, b.branchHist) * 0.44
+    + histDistance(a.pairHist, b.pairHist) * 0.38
+    + Math.abs(a.endpointRatio - b.endpointRatio) * 0.1
+    + Math.abs(a.junctionRatio - b.junctionRatio) * 0.06
+    + Math.abs(a.strokeDensity - b.strokeDensity) * 0.02;
+}
+
 function minTransformDistanceForSize(a, b, size = GRID_SIZE) {
   const aVariants = generateTransformVariantsForSize(a, size);
   const bVariants = generateTransformVariantsForSize(b, size);
@@ -2277,6 +2534,9 @@ function runAlgorithms(vector, dataset) {
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
       { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: "Need training data first", confidence: 0 },
       { id: 77, name: "Algorithm 77 (line-architecture matcher)", label: "Need training data first", confidence: 0 },
+      { id: 78, name: "Algorithm 78 (polar ray signature)", label: "Need training data first", confidence: 0 },
+      { id: 79, name: "Algorithm 79 (pair-geometry spectrum)", label: "Need training data first", confidence: 0 },
+      { id: 80, name: "Algorithm 80 (skeleton topology graph)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2326,6 +2586,21 @@ function runAlgorithms(vector, dataset) {
   const algorithm77Input = extractAlgorithm77Architecture(normalizedInput, GRID_SIZE);
   const algorithm77PrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
     acc[label] = extractAlgorithm77Architecture(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+  const algorithm78Input = buildAlgorithm78RaySignature(normalizedInput, GRID_SIZE);
+  const algorithm78PrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = buildAlgorithm78RaySignature(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+  const algorithm79Input = buildAlgorithm79PairGeometryDescriptor(normalizedInput, GRID_SIZE);
+  const algorithm79PrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = buildAlgorithm79PairGeometryDescriptor(prototype, GRID_SIZE);
+    return acc;
+  }, {});
+  const algorithm80Input = buildAlgorithm80TopologyDescriptor(normalizedInput, GRID_SIZE);
+  const algorithm80PrototypeByLabel = Object.entries(prototypesNormalized).reduce((acc, [label, prototype]) => {
+    acc[label] = buildAlgorithm80TopologyDescriptor(prototype, GRID_SIZE);
     return acc;
   }, {});
 
@@ -2467,12 +2742,53 @@ function runAlgorithms(vector, dataset) {
     label: algorithm77Ranked[0]?.label || "unknown",
     confidence: Math.max(1, Math.min(99, Math.round((algorithm77Probs[0] || 0) * 100))),
   };
+  const algorithm78Ranked = Object.entries(algorithm78PrototypeByLabel)
+    .map(([label, signature]) => {
+      const signatureDistance = algorithm78SignatureDistance(algorithm78Input, signature);
+      const score = 1 / Math.max(0.001, signatureDistance + 0.03);
+      return { label, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const algorithm78Probs = softmax(algorithm78Ranked.map((entry) => entry.score * 2.2));
+  const algorithm78 = {
+    label: algorithm78Ranked[0]?.label || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((algorithm78Probs[0] || 0) * 100))),
+  };
+
+  const algorithm79Ranked = Object.entries(algorithm79PrototypeByLabel)
+    .map(([label, descriptor]) => {
+      const descriptorDistance = algorithm79DescriptorDistance(algorithm79Input, descriptor);
+      const score = 1 / Math.max(0.001, descriptorDistance + 0.035);
+      return { label, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const algorithm79Probs = softmax(algorithm79Ranked.map((entry) => entry.score * 2.15));
+  const algorithm79 = {
+    label: algorithm79Ranked[0]?.label || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((algorithm79Probs[0] || 0) * 100))),
+  };
+
+  const algorithm80Ranked = Object.entries(algorithm80PrototypeByLabel)
+    .map(([label, descriptor]) => {
+      const topologyDistance = algorithm80TopologyDistance(algorithm80Input, descriptor);
+      const score = 1 / Math.max(0.001, topologyDistance + 0.04);
+      return { label, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const algorithm80Probs = softmax(algorithm80Ranked.map((entry) => entry.score * 2.1));
+  const algorithm80 = {
+    label: algorithm80Ranked[0]?.label || "unknown",
+    confidence: Math.max(1, Math.min(99, Math.round((algorithm80Probs[0] || 0) * 100))),
+  };
 
   return [
     { id: 1, name: "Algorithm 1 (v1 current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (v2 normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
     { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: algorithm72.label, confidence: algorithm72.confidence },
     { id: 77, name: "Algorithm 77 (line-architecture matcher)", label: algorithm77.label, confidence: algorithm77.confidence },
+    { id: 78, name: "Algorithm 78 (polar ray signature)", label: algorithm78.label, confidence: algorithm78.confidence },
+    { id: 79, name: "Algorithm 79 (pair-geometry spectrum)", label: algorithm79.label, confidence: algorithm79.confidence },
+    { id: 80, name: "Algorithm 80 (skeleton topology graph)", label: algorithm80.label, confidence: algorithm80.confidence },
   ];
 }
 
@@ -3216,7 +3532,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, 72, and 77).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, 72, 77, 78, 79, and 80).</p>
               <div className="stats dev-performance-grid">
                 <div className="stat">
                   <div>Performance score</div>
