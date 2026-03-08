@@ -3,3 +3,4 @@ Upcoming Object Ideas
 - Skull
 - Fishbowl
 - Chess King
+- Flag
