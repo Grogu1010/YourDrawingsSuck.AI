@@ -2843,6 +2843,20 @@ function derivePerformanceTelemetry(metrics) {
   };
 }
 
+function pickRandomItems(items, count) {
+  if (!Array.isArray(items) || count <= 0) return [];
+  if (count >= items.length) return [...items];
+
+  const pool = [...items];
+  for (let i = pool.length - 1; i > 0; i -= 1) {
+    const randomIndex = Math.floor(Math.random() * (i + 1));
+    const temp = pool[i];
+    pool[i] = pool[randomIndex];
+    pool[randomIndex] = temp;
+  }
+  return pool.slice(0, count);
+}
+
 
 function App() {
   const canvasRef = useRef(null);
@@ -2892,6 +2906,18 @@ function App() {
     maxQueueDelayMs: 0,
   });
   const [devPerformance, setDevPerformance] = useState(() => createEmptyPerformanceTelemetry());
+  const [devTestRunning, setDevTestRunning] = useState(false);
+  const [devTestProgress, setDevTestProgress] = useState({ processed: 0, total: 0 });
+  const [devTestReport, setDevTestReport] = useState(null);
+  const [devTestSampleSize, setDevTestSampleSize] = useState(25);
+  const [devTestPopupOpen, setDevTestPopupOpen] = useState(false);
+  const [devTestElapsedMs, setDevTestElapsedMs] = useState(0);
+  const [devTestLiveSnapshot, setDevTestLiveSnapshot] = useState({
+    currentLabel: "-",
+    currentGuesses: [],
+  });
+  const devTestStartedAtRef = useRef(0);
+  const devTestStopRequestedRef = useRef(false);
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
@@ -3254,6 +3280,145 @@ function App() {
     scheduleGuess(true);
   };
 
+
+  const runDevModelSweep = async ({ sampleSize = null } = {}) => {
+    if (devTestRunning) return;
+
+    if (dataset.length < 2) {
+      setStatusMessage("Need at least 2 drawings before running dev tests.");
+      return;
+    }
+
+    const indexedDataset = dataset.map((item, index) => ({ ...item, sourceIndex: index }));
+    const selectedDrawings = sampleSize ? pickRandomItems(indexedDataset, sampleSize) : indexedDataset;
+
+    if (!selectedDrawings.length) {
+      setStatusMessage("No drawings selected for dev test run.");
+      return;
+    }
+
+    const byAlgorithm = ACTIVE_ALGORITHM_IDS.reduce((acc, id) => {
+      acc[id] = { id, attempts: 0, correct: 0 };
+      return acc;
+    }, {});
+
+    devTestStopRequestedRef.current = false;
+    devTestStartedAtRef.current = Date.now();
+    setDevTestElapsedMs(0);
+    setDevTestPopupOpen(true);
+    setDevTestRunning(true);
+    setDevTestProgress({ processed: 0, total: selectedDrawings.length });
+    setDevTestLiveSnapshot({ currentLabel: "-", currentGuesses: [] });
+    setStatusMessage(`Running dev test over ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}...`);
+
+    for (let i = 0; i < selectedDrawings.length; i += 1) {
+      if (devTestStopRequestedRef.current) break;
+
+      const drawing = selectedDrawings[i];
+      const trainingDataset = indexedDataset.filter((item) => item.sourceIndex !== drawing.sourceIndex);
+      if (!trainingDataset.length) continue;
+
+      const results = runAlgorithms(drawing.vector, trainingDataset);
+      setDevTestLiveSnapshot({
+        currentLabel: drawing.label,
+        currentGuesses: results.map((result) => ({
+          id: result.id,
+          label: result.label,
+          confidence: result.confidence,
+        })),
+      });
+      ACTIVE_ALGORITHM_IDS.forEach((algorithmId) => {
+        const entry = byAlgorithm[algorithmId];
+        const result = results.find((candidate) => candidate.id === algorithmId);
+        entry.attempts += 1;
+        if (result?.label === drawing.label) entry.correct += 1;
+      });
+
+      const rollingSummary = ACTIVE_ALGORITHM_IDS.map((algorithmId) => {
+        const entry = byAlgorithm[algorithmId];
+        const winRate = entry.attempts ? Number(((entry.correct / entry.attempts) * 100).toFixed(1)) : 0;
+        return { ...entry, winRate };
+      }).sort((a, b) => {
+        if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+        if (b.correct !== a.correct) return b.correct - a.correct;
+        return a.id - b.id;
+      });
+
+      setDevTestReport({
+        generatedAt: Date.now(),
+        sampleLabel: sampleSize ? `Dev Test ${sampleSize}` : "Dev Test All",
+        totalDrawings: selectedDrawings.length,
+        summary: rollingSummary,
+      });
+
+      if ((i + 1) % 5 === 0 || i === selectedDrawings.length - 1) {
+        setDevTestProgress({ processed: i + 1, total: selectedDrawings.length });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    const summary = ACTIVE_ALGORITHM_IDS.map((algorithmId) => {
+      const entry = byAlgorithm[algorithmId];
+      const winRate = entry.attempts ? Number(((entry.correct / entry.attempts) * 100).toFixed(1)) : 0;
+      return { ...entry, winRate };
+    }).sort((a, b) => {
+      if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      if (b.correct !== a.correct) return b.correct - a.correct;
+      return a.id - b.id;
+    });
+
+    setDevTestReport({
+      generatedAt: Date.now(),
+      sampleLabel: sampleSize ? `Dev Test ${sampleSize}` : "Dev Test All",
+      totalDrawings: selectedDrawings.length,
+      summary,
+    });
+    setDevTestRunning(false);
+    const finalProcessed = Object.values(byAlgorithm)[0]?.attempts || 0;
+    setDevTestProgress({ processed: finalProcessed, total: selectedDrawings.length });
+    if (devTestStopRequestedRef.current) {
+      setStatusMessage(`Dev test stopped early at ${finalProcessed}/${selectedDrawings.length} drawings.`);
+    } else {
+      setStatusMessage(`Dev test complete. Evaluated ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}.`);
+    }
+  };
+
+  const startDevTestWithPromptedSample = () => {
+    if (devTestRunning) return;
+
+    const suggested = Number.isFinite(devTestSampleSize) && devTestSampleSize > 0
+      ? Math.floor(devTestSampleSize)
+      : 25;
+    const valueRaw = window.prompt("How many random drawings should Dev Test run?", String(suggested));
+    if (valueRaw === null) return;
+
+    const parsed = Number.parseInt(valueRaw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setStatusMessage("Please enter a whole number greater than 0 for Dev Test sample size.");
+      return;
+    }
+
+    const clamped = Math.min(parsed, Math.max(1, dataset.length));
+    setDevTestSampleSize(clamped);
+    runDevModelSweep({ sampleSize: clamped });
+  };
+
+  const stopDevTestNow = () => {
+    if (!devTestRunning) return;
+    devTestStopRequestedRef.current = true;
+    setStatusMessage("Stopping dev test after current drawing...");
+  };
+
+  useEffect(() => {
+    if (!devTestRunning) return undefined;
+
+    const timer = setInterval(() => {
+      setDevTestElapsedMs(Date.now() - devTestStartedAtRef.current);
+    }, 150);
+
+    return () => clearInterval(timer);
+  }, [devTestRunning]);
+
   useEffect(() => {
     saveDevTrainingMode(trainingMode);
   }, [trainingMode]);
@@ -3557,6 +3722,34 @@ function App() {
               <p>Runs tracked: {devPerformance.runs}</p>
 
               <div className="row">
+                <button className="secondary" onClick={startDevTestWithPromptedSample} disabled={devTestRunning}>
+                  Dev Test {Math.max(1, Math.floor(devTestSampleSize || 1))}
+                </button>
+                <button className="secondary" onClick={() => runDevModelSweep()} disabled={devTestRunning}>
+                  Dev Test All
+                </button>
+              </div>
+              {devTestRunning && (
+                <p>Running benchmark: {devTestProgress.processed}/{devTestProgress.total} drawings tested.</p>
+              )}
+              {devTestReport && (
+                <>
+                  <p>
+                    <strong>{devTestReport.sampleLabel}</strong> · {devTestReport.totalDrawings} drawings · {new Date(devTestReport.generatedAt).toLocaleString()}
+                  </p>
+                  <div className="algo-grid">
+                    {devTestReport.summary.map((algo) => (
+                      <div className="stat" key={`dev-test-${algo.id}`}>
+                        <div><strong>Algorithm {algo.id}</strong></div>
+                        <div>Win rate: {algo.winRate}%</div>
+                        <div>Correct: {algo.correct}/{algo.attempts}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
                   onClick={() => setDevStatsView("session")}
@@ -3657,6 +3850,50 @@ function App() {
             ))}
           </article>
         </section>
+      )}
+
+      {devTestPopupOpen && (
+        <div className="dev-test-overlay" role="dialog" aria-modal="true" aria-label="Dev test benchmark">
+          <section className="card dev-test-popup">
+            <div className="dev-test-popup-header">
+              <h3>Dev Test Live</h3>
+              <div className="row">
+                {devTestRunning ? (
+                  <button className="warn" onClick={stopDevTestNow}>Stop now</button>
+                ) : (
+                  <button className="secondary" onClick={() => setDevTestPopupOpen(false)}>Close</button>
+                )}
+              </div>
+            </div>
+            <p>
+              Time: {(devTestElapsedMs / 1000).toFixed(1)}s · Progress: {devTestProgress.processed}/{devTestProgress.total}
+            </p>
+            <p>Current drawing: <strong>{devTestLiveSnapshot.currentLabel}</strong></p>
+            <div className="algo-grid">
+              {devTestLiveSnapshot.currentGuesses.map((algo) => (
+                <div className="stat" key={`live-guess-${algo.id}`}>
+                  <div><strong>Algorithm {algo.id}</strong></div>
+                  <div>Guess: {algo.label}</div>
+                  <div>Confidence: {algo.confidence}%</div>
+                </div>
+              ))}
+            </div>
+            {devTestReport && (
+              <>
+                <h4>Live win rates</h4>
+                <div className="algo-grid">
+                  {devTestReport.summary.map((algo) => (
+                    <div className="stat" key={`live-summary-${algo.id}`}>
+                      <div><strong>Algorithm {algo.id}</strong></div>
+                      <div>Win rate: {algo.winRate}%</div>
+                      <div>Correct: {algo.correct}/{algo.attempts}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        </div>
       )}
     </main>
   );
