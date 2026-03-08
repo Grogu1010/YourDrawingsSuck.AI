@@ -1,36 +1,69 @@
 # YourDrawingsSuck.AI
 YOUR DRAWINGS SUCK, YOU A**HOLE!!
 
-## Optional shared sync server
+## Set up the optional sync server (easy version)
 
-The app still works fully offline/local by default.
+> You only need this if you want multiple people/devices sharing drawings.
+> If you skip this, the app still works fully offline and saves drawings locally.
 
-If you want everybody's drawings synced to one server:
+### 1) Start the server
 
-1. Start the included server on your host machine:
+From the project folder, run:
 
 ```bash
 node server.js
 ```
 
-2. Point clients to that server by setting one of these:
-   - `window.__YDS_SERVER_URL = "http://YOUR_SERVER_IP:8787"` before `app.js` loads, or
-   - localStorage key `yourdrawingssuckai.serverUrl.v1` to that URL.
+By default, the server runs at:
 
-When a user first opens the app, they get a `Please enter a name` prompt. Drawings are always saved locally and, when a server URL is configured, they are also synced to the server with:
+- `http://localhost:8787` (on your own machine)
+- `http://YOUR_SERVER_IP:8787` (from other devices on your network)
 
-- `authorName` (their chosen name)
+### 2) Tell the app where the server is
+
+Choose **one** method:
+
+#### Option A (best for developers): set `window.__YDS_SERVER_URL`
+
+Set this **before** `app.js` loads:
+
+```html
+<script>
+  window.__YDS_SERVER_URL = "http://YOUR_SERVER_IP:8787";
+</script>
+<script src="app.js"></script>
+```
+
+#### Option B: save the URL in localStorage
+
+Open DevTools Console and run:
+
+```js
+localStorage.setItem("yourdrawingssuckai.serverUrl.v1", "http://YOUR_SERVER_IP:8787");
+```
+
+Then refresh the page.
+
+### 3) Confirm it worked
+
+When a user opens the app, they are prompted for a name (`Please enter a name`).
+
+Drawings are always saved locally. If a server URL is configured, drawings are also synced to the server with:
+
+- `authorName` (chosen name)
 - `clientId` (browser identity)
 - server-observed IP address
 
-Existing local drawings are bulk uploaded on first successful sync.
+If there are existing local drawings, they are bulk uploaded on the first successful sync.
 
-### Rename existing drawings for one user
+---
 
-The app exposes a helper so Settings can rename a user and backfill old entries:
+## Rename existing drawings for one user
+
+You can rename a user and backfill previous entries by running:
 
 ```js
 window.changeDrawingPlayerName("New Name")
 ```
 
-That updates local drawings and triggers a full server sync so previous drawings also get the new name.
+This updates local drawings and triggers a full sync so older server entries also get the new name.
