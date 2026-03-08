@@ -2912,6 +2912,13 @@ function App() {
               );
             })}
           </div>
+          <h2>HyperDraw v2X Update</h2>
+          <p className="subtitle">A short breakdown of what changed, and what comes next.</p>
+          <article>
+            {V2X_ARTICLE_PARAGRAPHS.map((paragraph, index) => (
+              <p key={`v2x-article-${index}`}>{paragraph}</p>
+            ))}
+          </article>
         </section>
       )}
     </main>

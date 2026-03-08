@@ -142,4 +142,13 @@ select {
   color: #a7f3d0;
   font-size: 0.88rem;
   margin-bottom: 0;
+
+@media (max-width: 980px) {
+  .grid { grid-template-columns: 1fr; }
+  canvas { max-height: 56vh; }
+}
+
+@media (max-width: 800px) {
+  .compare-grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr; }
 }
