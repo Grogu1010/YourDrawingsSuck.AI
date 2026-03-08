@@ -23,6 +23,8 @@ const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 const MIN_POINT_DISTANCE_SQ = 9;
 
+const DEV_TEST_SAMPLE_SIZE = 25;
+
 const ACTIVE_ALGORITHM_IDS = [1, 7, 72, 77, 78, 79, 80];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
@@ -3314,6 +3316,11 @@ function App() {
     for (let i = 0; i < selectedDrawings.length; i += 1) {
       if (devTestStopRequestedRef.current) break;
 
+    setDevTestRunning(true);
+    setDevTestProgress({ processed: 0, total: selectedDrawings.length });
+    setStatusMessage(`Running dev test over ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}...`);
+
+    for (let i = 0; i < selectedDrawings.length; i += 1) {
       const drawing = selectedDrawings[i];
       const trainingDataset = indexedDataset.filter((item) => item.sourceIndex !== drawing.sourceIndex);
       if (!trainingDataset.length) continue;
@@ -3418,6 +3425,9 @@ function App() {
 
     return () => clearInterval(timer);
   }, [devTestRunning]);
+
+    setStatusMessage(`Dev test complete. Evaluated ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}.`);
+  };
 
   useEffect(() => {
     saveDevTrainingMode(trainingMode);
@@ -3724,6 +3734,8 @@ function App() {
               <div className="row">
                 <button className="secondary" onClick={startDevTestWithPromptedSample} disabled={devTestRunning}>
                   Dev Test {Math.max(1, Math.floor(devTestSampleSize || 1))}
+                <button className="secondary" onClick={() => runDevModelSweep({ sampleSize: DEV_TEST_SAMPLE_SIZE })} disabled={devTestRunning}>
+                  Dev Test {DEV_TEST_SAMPLE_SIZE}
                 </button>
                 <button className="secondary" onClick={() => runDevModelSweep()} disabled={devTestRunning}>
                   Dev Test All
