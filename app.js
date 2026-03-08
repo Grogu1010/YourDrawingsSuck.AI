@@ -17,6 +17,7 @@ const USER_PROFILE_STORAGE_KEY = "yourdrawingssuckai.userProfile.v1";
 const SERVER_URL_STORAGE_KEY = "yourdrawingssuckai.serverUrl.v1";
 const SERVER_SYNC_REV_STORAGE_KEY = "yourdrawingssuckai.serverSyncRevision.v1";
 const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
+const DEV_TRAINING_MODE_STORAGE_KEY = "yourdrawingssuckai.devTrainingMode.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
@@ -81,6 +82,42 @@ function setStorageItem(key, value) {
 
 function randomPrompt() {
   return OBJECTS[Math.floor(Math.random() * OBJECTS.length)];
+}
+
+function randomPromptWeighted(promptCounts = {}) {
+  const weighted = OBJECTS.map((label) => {
+    const count = promptCounts[label] || 0;
+    const scarcityWeight = 1 / (1 + count);
+    const jitter = 0.88 + Math.random() * 0.24;
+    return { label, weight: scarcityWeight * jitter };
+  });
+
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
+  if (totalWeight <= 0) return randomPrompt();
+
+  let roll = Math.random() * totalWeight;
+  for (const item of weighted) {
+    roll -= item.weight;
+    if (roll <= 0) return item.label;
+  }
+  return weighted[weighted.length - 1].label;
+}
+
+function chooseNextPrompt({ trainingMode = false, promptCounts = {} } = {}) {
+  return trainingMode ? randomPromptWeighted(promptCounts) : randomPrompt();
+}
+
+function applyTrainingNoise(vector, intensity = 0.04) {
+  if (!Array.isArray(vector)) return [];
+  return vector.map((value) => Math.max(0, Math.min(1, value + (Math.random() * 2 - 1) * intensity)));
+}
+
+function loadDevTrainingMode() {
+  return getStorageItem(DEV_TRAINING_MODE_STORAGE_KEY) === "1";
+}
+
+function saveDevTrainingMode(value) {
+  setStorageItem(DEV_TRAINING_MODE_STORAGE_KEY, value ? "1" : "0");
 }
 
 function loadDataset() {
@@ -2439,6 +2476,47 @@ function runAlgorithms(vector, dataset) {
 }
 
 
+function createEmptyPerformanceTelemetry() {
+  return {
+    runs: 0,
+    averageComputeMs: 0,
+    averageQueueDelayMs: 0,
+    averageLagMs: 0,
+    performanceScore: 100,
+    issues: ["No telemetry yet. Start drawing to collect metrics."],
+  };
+}
+
+function derivePerformanceTelemetry(metrics) {
+  if (!metrics.samples) return createEmptyPerformanceTelemetry();
+
+  const averageComputeMs = metrics.computeMs / metrics.samples;
+  const averageQueueDelayMs = metrics.queueDelayMs / metrics.samples;
+  const averageLagMs = metrics.lagMs / metrics.samples;
+
+  let score = 100;
+  score -= Math.max(0, averageComputeMs - 6) * 2.2;
+  score -= Math.max(0, averageQueueDelayMs - 10) * 0.95;
+  score -= Math.max(0, averageLagMs - 2) * 2.6;
+  score -= metrics.slowFrames * 4;
+  score = Math.round(Math.max(1, Math.min(100, score)));
+
+  const issues = [];
+  if (averageComputeMs > 18) issues.push("Inference compute time is high. Consider a smaller/cleaner dataset.");
+  if (averageQueueDelayMs > 60) issues.push("Guess queue delay is high. Input events are arriving faster than guesses complete.");
+  if (averageLagMs > 12) issues.push("Frame lag is noticeable. Rendering + prediction work is heavy per stroke.");
+  if (!issues.length) issues.push("No major issues detected right now.");
+
+  return {
+    runs: metrics.samples,
+    averageComputeMs: Number(averageComputeMs.toFixed(1)),
+    averageQueueDelayMs: Number(averageQueueDelayMs.toFixed(1)),
+    averageLagMs: Number(averageLagMs.toFixed(1)),
+    performanceScore: score,
+    issues,
+  };
+}
+
 
 function App() {
   const canvasRef = useRef(null);
@@ -2455,7 +2533,7 @@ function App() {
   const cryptoContextRef = useRef(null);
 
   const [dataset, setDataset] = useState(() => loadDataset());
-  const [prompt, setPrompt] = useState(() => randomPrompt());
+  const [prompt, setPrompt] = useState(() => chooseNextPrompt({ trainingMode: loadDevTrainingMode(), promptCounts: {} }));
   const [selectedModel, setSelectedModel] = useState("hyperdraw_v2x");
   const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
@@ -2468,13 +2546,18 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
+  const [trainingMode, setTrainingMode] = useState(() => loadDevTrainingMode());
   const [activeTab, setActiveTab] = useState("draw");
   const [expandedArticleId, setExpandedArticleId] = useState(null);
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
+  const [trainingSessionAlgorithmStats, setTrainingSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
+  const [trainingLifetimeAlgorithmStats, setTrainingLifetimeAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
   const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const performanceMetricsRef = useRef({ samples: 0, computeMs: 0, queueDelayMs: 0, lagMs: 0, slowFrames: 0 });
+  const [devPerformance, setDevPerformance] = useState(() => createEmptyPerformanceTelemetry());
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
   useEffect(() => {
@@ -2683,9 +2766,13 @@ function App() {
   };
 
   const skipObject = () => {
-    setPrompt(randomPrompt());
+    const currentCounts = dataset.reduce((acc, item) => {
+      acc[item.label] = (acc[item.label] || 0) + 1;
+      return acc;
+    }, {});
+    setPrompt(chooseNextPrompt({ trainingMode, promptCounts: currentCounts }));
     clearCanvas();
-    setStatusMessage("Skipped. New object loaded.");
+    setStatusMessage(trainingMode ? "Skipped. Training Mode prioritized a less-trained object." : "Skipped. New object loaded.");
   };
 
   const vectorizeCanvas = () => {
@@ -2729,7 +2816,7 @@ function App() {
     };
   };
 
-  const guessDrawing = () => {
+  const guessDrawing = ({ scheduledAt = null } = {}) => {
     if (!canvasRef.current) return;
 
     const drawingStats = getDrawingStats();
@@ -2753,6 +2840,7 @@ function App() {
       return;
     }
 
+    const guessStart = performance.now();
     const { hyperDraw, hyperDrawV2, hyperDrawV2X } = runLiveAlgorithmsPrepared(drawingStats.vec, preparedLiveDataset);
     const selected = selectedModel === "hyperdraw" ? hyperDraw : (selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDrawV2X);
 
@@ -2764,6 +2852,17 @@ function App() {
     });
     if (devMode) {
       setLastDoneResults(runAlgorithms(drawingStats.vec, dataset));
+
+      const computeMs = performance.now() - guessStart;
+      const queueDelayMs = scheduledAt ? Math.max(0, guessStart - scheduledAt) : 0;
+      const lagMs = Math.max(0, computeMs - 16.7);
+      const metrics = performanceMetricsRef.current;
+      metrics.samples += 1;
+      metrics.computeMs += computeMs;
+      metrics.queueDelayMs += queueDelayMs;
+      metrics.lagMs += lagMs;
+      if (computeMs > 24 || queueDelayMs > 42) metrics.slowFrames += 1;
+      setDevPerformance(derivePerformanceTelemetry(metrics));
     }
     setStatusMessage("");
   };
@@ -2779,10 +2878,11 @@ function App() {
     }
 
     const delay = immediate ? 0 : 180;
+    const scheduledAt = performance.now() + delay;
     guessTimeoutRef.current = setTimeout(() => {
       if (drawingRevisionRef.current === lastGuessedRevisionRef.current && !immediate) return;
       lastGuessedRevisionRef.current = drawingRevisionRef.current;
-      guessDrawing();
+      guessDrawing({ scheduledAt });
       guessTimeoutRef.current = null;
     }, delay);
   };
@@ -2791,6 +2891,10 @@ function App() {
     stopDrawing();
     scheduleGuess(true);
   };
+
+  useEffect(() => {
+    saveDevTrainingMode(trainingMode);
+  }, [trainingMode]);
 
   useEffect(
     () => () => {
@@ -2810,6 +2914,7 @@ function App() {
     }
 
     const { vec } = drawingStats;
+    const trainingVec = trainingMode ? applyTrainingNoise(vec) : vec;
     const { hyperDraw, hyperDrawV2, hyperDrawV2X } = runLiveAlgorithmsPrepared(vec, preparedLiveDataset);
     const results = devMode ? runAlgorithms(vec, dataset) : [];
 
@@ -2820,28 +2925,54 @@ function App() {
     });
     setLastDoneResults(results);
     if (devMode) {
-      setAlgorithmStats((previous) =>
-        previous.map((algo) => {
-          const result = results.find((entry) => entry.id === algo.id);
-          const gotItRight = result?.label === prompt;
-          return {
-            ...algo,
-            attempts: algo.attempts + 1,
-            correct: algo.correct + (gotItRight ? 1 : 0),
-          };
-        })
-      );
-      setSessionAlgorithmStats((previous) =>
-        previous.map((algo) => {
-          const result = results.find((entry) => entry.id === algo.id);
-          const gotItRight = result?.label === prompt;
-          return {
-            ...algo,
-            attempts: algo.attempts + 1,
-            correct: algo.correct + (gotItRight ? 1 : 0),
-          };
-        })
-      );
+      if (trainingMode) {
+        setTrainingSessionAlgorithmStats((previous) =>
+          previous.map((algo) => {
+            const result = results.find((entry) => entry.id === algo.id);
+            const gotItRight = result?.label === prompt;
+            return {
+              ...algo,
+              attempts: algo.attempts + 1,
+              correct: algo.correct + (gotItRight ? 1 : 0),
+            };
+          })
+        );
+
+        setTrainingLifetimeAlgorithmStats((previous) =>
+          previous.map((algo) => {
+            const result = results.find((entry) => entry.id === algo.id);
+            const gotItRight = result?.label === prompt;
+            return {
+              ...algo,
+              attempts: algo.attempts + 1,
+              correct: algo.correct + (gotItRight ? 1 : 0),
+            };
+          })
+        );
+      } else {
+        setAlgorithmStats((previous) =>
+          previous.map((algo) => {
+            const result = results.find((entry) => entry.id === algo.id);
+            const gotItRight = result?.label === prompt;
+            return {
+              ...algo,
+              attempts: algo.attempts + 1,
+              correct: algo.correct + (gotItRight ? 1 : 0),
+            };
+          })
+        );
+        setSessionAlgorithmStats((previous) =>
+          previous.map((algo) => {
+            const result = results.find((entry) => entry.id === algo.id);
+            const gotItRight = result?.label === prompt;
+            return {
+              ...algo,
+              attempts: algo.attempts + 1,
+              correct: algo.correct + (gotItRight ? 1 : 0),
+            };
+          })
+        );
+      }
     }
 
     setCompareStats((previous) => {
@@ -2860,7 +2991,7 @@ function App() {
     const profile = profileRef.current;
     const updated = [
       ...dataset,
-      { id: randomId(), label: prompt, vector: vec, ts: Date.now(), authorName: profile.name, clientId: profile.clientId },
+      { id: randomId(), label: prompt, vector: trainingVec, ts: Date.now(), authorName: profile.name, clientId: profile.clientId },
     ].slice(-2000);
     setDataset(updated);
     saveDataset(updated);
@@ -2873,9 +3004,15 @@ function App() {
       // Keep local save successful even if server is unavailable.
     }
 
-    setPrompt(randomPrompt());
+    const nextPromptCounts = updated.reduce((acc, item) => {
+      acc[item.label] = (acc[item.label] || 0) + 1;
+      return acc;
+    }, {});
+    setPrompt(chooseNextPrompt({ trainingMode, promptCounts: nextPromptCounts }));
     clearCanvas();
-    setStatusMessage("Done! Added to dataset and moved to the next prompt.");
+    setStatusMessage(trainingMode
+      ? "Done! Saved with training noise and queued a less-trained prompt."
+      : "Done! Added to dataset and moved to the next prompt.");
   };
 
   const promptCounts = useMemo(
@@ -2924,6 +3061,11 @@ function App() {
             <button className={`secondary ${devMode ? "active" : ""}`} onClick={() => setDevMode((on) => !on)}>
               {devMode ? "Dev Mode: ON" : "Dev Mode"}
             </button>
+            {devMode && (
+              <button className={`secondary ${trainingMode ? "active" : ""}`} onClick={() => setTrainingMode((on) => !on)}>
+                {trainingMode ? "Training Mode: ON" : "Training Mode"}
+              </button>
+            )}
           </div>
           {statusMessage && <p className="status-msg">{statusMessage}</p>}
         </section>
@@ -2994,6 +3136,26 @@ function App() {
             <>
               <h3>Algorithm lab</h3>
               <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, 72, and 77).</p>
+              <div className="stats dev-performance-grid">
+                <div className="stat">
+                  <div>Performance score</div>
+                  <div className="big">{devPerformance.performanceScore}/100</div>
+                </div>
+                <div className="stat">
+                  <div>Avg speed</div>
+                  <div>{devPerformance.averageComputeMs}ms compute</div>
+                  <div>{devPerformance.averageQueueDelayMs}ms queue delay</div>
+                  <div>{devPerformance.averageLagMs}ms lag estimate</div>
+                </div>
+              </div>
+              <div className="stat">
+                <div><strong>Key issues</strong></div>
+                <ul className="issues-list">
+                  {devPerformance.issues.map((issue) => <li key={issue}>{issue}</li>)}
+                </ul>
+              </div>
+              <p>Runs tracked: {devPerformance.runs}</p>
+
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
@@ -3009,12 +3171,17 @@ function App() {
                 </button>
               </div>
               <p>
-                {devStatsView === "session"
-                  ? "Session checks reset on reload."
-                  : "Lifetime checks are saved in your browser."}
+                {!trainingMode && devStatsView === "session" && "Session checks reset on reload."}
+                {!trainingMode && devStatsView === "lifetime" && "Lifetime checks are saved in your browser."}
+                {trainingMode && devStatsView === "session" && "Training-session checks are separate and reset on reload."}
+                {trainingMode && devStatsView === "lifetime" && "Training-lifetime checks are separate and never saved to storage."}
               </p>
               <div className="algo-grid">
-                {[...(devStatsView === "session" ? sessionAlgorithmStats : algorithmStats)]
+                {[...(
+                  trainingMode
+                    ? (devStatsView === "session" ? trainingSessionAlgorithmStats : trainingLifetimeAlgorithmStats)
+                    : (devStatsView === "session" ? sessionAlgorithmStats : algorithmStats)
+                )]
                   .sort((a, b) => {
                     const aAccuracy = a.attempts ? a.correct / a.attempts : -1;
                     const bAccuracy = b.attempts ? b.correct / b.attempts : -1;
