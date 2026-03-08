@@ -21,7 +21,7 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 77];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 72];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
 
@@ -1943,161 +1943,6 @@ function minTransformDistanceForSize(a, b, size = GRID_SIZE) {
   return best;
 }
 
-function extractLineSegments(vector, size = GRID_SIZE, threshold = 0.24) {
-  const normalized = normalizeVectorForSize(vector, size);
-  const binary = normalized.map((value) => (value >= threshold ? 1 : 0));
-  const visited = new Set();
-  const lines = [];
-  const directions = [
-    { dx: 1, dy: 0, angle: 0 },
-    { dx: 0, dy: 1, angle: 90 },
-    { dx: 1, dy: 1, angle: 45 },
-    { dx: 1, dy: -1, angle: 135 },
-  ];
-
-  const inBounds = (x, y) => x >= 0 && y >= 0 && x < size && y < size;
-
-  const symmetryScore = () => {
-    let compared = 0;
-    let mirrorMatches = 0;
-    for (let y = 0; y < size; y += 1) {
-      for (let x = 0; x < size; x += 1) {
-        const value = binary[y * size + x];
-        if (!value) continue;
-        const mirrorX = size - 1 - x;
-        const mirrorY = size - 1 - y;
-        mirrorMatches += binary[y * size + mirrorX] || 0;
-        mirrorMatches += binary[mirrorY * size + x] || 0;
-        compared += 2;
-      }
-    }
-    return compared ? mirrorMatches / compared : 0;
-  };
-
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      if (!binary[y * size + x]) continue;
-
-      directions.forEach(({ dx, dy, angle }) => {
-        const visitKey = `${x},${y},${dx},${dy}`;
-        if (visited.has(visitKey)) return;
-
-        const prevX = x - dx;
-        const prevY = y - dy;
-        if (inBounds(prevX, prevY) && binary[prevY * size + prevX]) return;
-
-        let cx = x;
-        let cy = y;
-        let length = 0;
-
-        while (inBounds(cx, cy) && binary[cy * size + cx]) {
-          visited.add(`${cx},${cy},${dx},${dy}`);
-          length += 1;
-          cx += dx;
-          cy += dy;
-        }
-
-        if (length < 2) return;
-
-        const endX = cx - dx;
-        const endY = cy - dy;
-        const lineLength = Math.hypot(endX - x, endY - y) / Math.max(1, size - 1);
-        const midpointX = (x + endX) / 2 / Math.max(1, size - 1);
-        const midpointY = (y + endY) / 2 / Math.max(1, size - 1);
-        const straightness = Math.min(1, lineLength / Math.max(0.001, length / size));
-
-        lines.push({ angle, lineLength, midpointX, midpointY, straightness });
-      });
-    }
-  }
-
-  if (!lines.length) {
-    return {
-      lines: [],
-      lineCountNorm: 0,
-      averageLineGap: 1,
-      symmetry: 0,
-    };
-  }
-
-  const averageLineGap = lines.reduce((sum, line, index) => {
-    const nearest = lines.reduce((best, candidate, candidateIndex) => {
-      if (index === candidateIndex) return best;
-      const d = Math.hypot(line.midpointX - candidate.midpointX, line.midpointY - candidate.midpointY);
-      return Math.min(best, d);
-    }, 1);
-    return sum + nearest;
-  }, 0) / lines.length;
-
-  return {
-    lines,
-    lineCountNorm: Math.min(1, lines.length / (size * 1.2)),
-    averageLineGap,
-    symmetry: symmetryScore(),
-  };
-}
-
-function lineAngleDistance(a, b) {
-  const diff = Math.abs(a - b) % 180;
-  return Math.min(diff, 180 - diff) / 90;
-}
-
-function lineDescriptorDistance(a, b) {
-  const angle = lineAngleDistance(a.angle, b.angle);
-  const length = Math.abs(a.lineLength - b.lineLength);
-  const spacing = Math.hypot(a.midpointX - b.midpointX, a.midpointY - b.midpointY);
-  const straightness = Math.abs(a.straightness - b.straightness);
-  return angle * 0.35 + length * 0.3 + spacing * 0.25 + straightness * 0.1;
-}
-
-function scoreAlgorithm77(inputVector, dataset) {
-  const inputVariants = generateTransformVariantsForSize(normalizeVectorForSize(inputVector, GRID_SIZE), GRID_SIZE)
-    .map((variant) => extractLineSegments(variant, GRID_SIZE));
-
-  const scored = dataset.map((item) => {
-    const sampleVariants = generateTransformVariantsForSize(normalizeVectorForSize(item.vector, GRID_SIZE), GRID_SIZE)
-      .map((variant) => extractLineSegments(variant, GRID_SIZE));
-
-    const bestDistance = inputVariants.reduce((best, inputDescriptor) => {
-      return sampleVariants.reduce((bestVariant, sampleDescriptor) => {
-        const inputLines = inputDescriptor.lines;
-        const sampleLines = sampleDescriptor.lines;
-        if (!inputLines.length || !sampleLines.length) return Math.min(bestVariant, 1);
-
-        const forward = inputLines.reduce((sum, inputLine) => {
-          const nearest = sampleLines.reduce((nearestDistance, sampleLine) => {
-            return Math.min(nearestDistance, lineDescriptorDistance(inputLine, sampleLine));
-          }, Number.POSITIVE_INFINITY);
-          return sum + nearest;
-        }, 0) / inputLines.length;
-
-        const backward = sampleLines.reduce((sum, sampleLine) => {
-          const nearest = inputLines.reduce((nearestDistance, inputLine) => {
-            return Math.min(nearestDistance, lineDescriptorDistance(sampleLine, inputLine));
-          }, Number.POSITIVE_INFINITY);
-          return sum + nearest;
-        }, 0) / sampleLines.length;
-
-        const lineCountGap = Math.abs(inputDescriptor.lineCountNorm - sampleDescriptor.lineCountNorm);
-        const spacingGap = Math.abs(inputDescriptor.averageLineGap - sampleDescriptor.averageLineGap);
-        const symmetryGap = Math.abs(inputDescriptor.symmetry - sampleDescriptor.symmetry);
-
-        const descriptorDistance =
-          ((forward + backward) / 2) * 0.72 +
-          lineCountGap * 0.12 +
-          spacingGap * 0.1 +
-          symmetryGap * 0.06;
-
-        return Math.min(bestVariant, descriptorDistance);
-      }, best);
-    }, Number.POSITIVE_INFINITY);
-
-    return { label: item.label, distance: Math.max(0.01, bestDistance) };
-  });
-
-  return classifyFromDistances(scored, 0.01, 2.45);
-}
-
 function scoreTransformInvariantModelForSize(inputVector, dataset, size, options = {}) {
   const { k = 17, distanceFloor = 0.02, featureWeight = 0.35, centerWeightPower = 0 } = options;
   const inputNorm = normalizeVectorForSize(inputVector, size);
@@ -2228,7 +2073,7 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
     confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100),
   };
 
-  const hyperDrawV2X = runAlgorithms(vector, normalizedDataset.map((item) => ({ label: item.label, vector: item.normalizedVector }))).find((item) => item.id === 77) || { label: "unknown", confidence: 0 };
+  const hyperDrawV2X = runAlgorithms(vector, normalizedDataset.map((item) => ({ label: item.label, vector: item.normalizedVector }))).find((item) => item.id === 72) || { label: "unknown", confidence: 0 };
 
   return { hyperDraw, hyperDrawV2, hyperDrawV2X };
 }
@@ -2238,7 +2083,7 @@ function runAlgorithms(vector, dataset) {
     return [
       { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
-      { id: 77, name: "Algorithm 77 (line-signature invariant)", label: "Need training data first", confidence: 0 },
+      { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2403,7 +2248,7 @@ function runAlgorithms(vector, dataset) {
   const algorithm69 = scoreAlgo45TransformVariant({ neighborDepth: 7, lineBlend: 0.14, densityWeight: 0.04, balancePenalty: 0.08, temperature: 2.4 });
   const algorithm70 = scoreAlgo45TransformVariant({ neighborDepth: 5, lineBlend: 0.11, densityWeight: 0.08, temperature: 2.3 });
   const algorithm71 = scoreAlgo45TransformVariant({ neighborDepth: 9, lineBlend: 0.13, densityWeight: 0.04, temperature: 2.2 });
-  const algorithm77 = scoreAlgorithm77(vector, dataset);
+  const algorithm72 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.13, densityWeight: 0.04, centerWeight: 0.05, temperature: 2.35 });
   const algorithm73 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.12, densityWeight: 0.04, centerWeight: 0.03, temperature: 2.55 });
   const algorithm74 = scoreAlgo45TransformVariant({ neighborDepth: 6, lineBlend: 0.22, densityWeight: 0.03, temperature: 2.3 });
   const algorithm75 = scoreAlgo45TransformVariant({ neighborDepth: 7, lineBlend: 0.16, densityWeight: 0.04, balancePenalty: 0.14, temperature: 2.35 });
@@ -2412,7 +2257,7 @@ function runAlgorithms(vector, dataset) {
   return [
     { id: 1, name: "Algorithm 1 (v1 current)", label: algo1Guess, confidence: algo1Confidence },
     { id: 7, name: "Algorithm 7 (v2 normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
-    { id: 77, name: "Algorithm 77 (line-signature invariant)", label: algorithm77.label, confidence: algorithm77.confidence },
+    { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: algorithm72.label, confidence: algorithm72.confidence },
   ];
 }
 
@@ -2971,7 +2816,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, and 77).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, and 72).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
