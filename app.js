@@ -2482,6 +2482,9 @@ function createEmptyPerformanceTelemetry() {
     averageComputeMs: 0,
     averageQueueDelayMs: 0,
     averageLagMs: 0,
+    maxComputeMs: 0,
+    maxQueueDelayMs: 0,
+    slowFrameRatio: 0,
     performanceScore: 100,
     issues: ["No telemetry yet. Start drawing to collect metrics."],
   };
@@ -2493,18 +2496,21 @@ function derivePerformanceTelemetry(metrics) {
   const averageComputeMs = metrics.computeMs / metrics.samples;
   const averageQueueDelayMs = metrics.queueDelayMs / metrics.samples;
   const averageLagMs = metrics.lagMs / metrics.samples;
+  const slowFrameRatio = metrics.slowFrames / metrics.samples;
 
-  let score = 100;
-  score -= Math.max(0, averageComputeMs - 6) * 2.2;
-  score -= Math.max(0, averageQueueDelayMs - 10) * 0.95;
-  score -= Math.max(0, averageLagMs - 2) * 2.6;
-  score -= metrics.slowFrames * 4;
-  score = Math.round(Math.max(1, Math.min(100, score)));
+  const computePenalty = Math.max(0, (averageComputeMs - 8) / 20) * 38;
+  const queuePenalty = Math.max(0, (averageQueueDelayMs - 14) / 70) * 26;
+  const lagPenalty = Math.max(0, (averageLagMs - 3) / 14) * 24;
+  const slowFramePenalty = Math.min(1, slowFrameRatio * 1.2) * 12;
+
+  const rawScore = 100 - computePenalty - queuePenalty - lagPenalty - slowFramePenalty;
+  const score = Math.round(Math.max(0, Math.min(100, rawScore)));
 
   const issues = [];
-  if (averageComputeMs > 18) issues.push("Inference compute time is high. Consider a smaller/cleaner dataset.");
-  if (averageQueueDelayMs > 60) issues.push("Guess queue delay is high. Input events are arriving faster than guesses complete.");
-  if (averageLagMs > 12) issues.push("Frame lag is noticeable. Rendering + prediction work is heavy per stroke.");
+  if (averageComputeMs > 16) issues.push("Inference compute time is high. Consider reducing dataset size or algorithm complexity.");
+  if (averageQueueDelayMs > 48) issues.push("Guess queue delay is high. Inputs are arriving faster than inference completes.");
+  if (averageLagMs > 10) issues.push("Frame lag is noticeable. Rendering + prediction work is heavy while drawing.");
+  if (slowFrameRatio > 0.25) issues.push("Over a quarter of checks are slow frames. Performance is inconsistent under live interaction.");
   if (!issues.length) issues.push("No major issues detected right now.");
 
   return {
@@ -2512,6 +2518,9 @@ function derivePerformanceTelemetry(metrics) {
     averageComputeMs: Number(averageComputeMs.toFixed(1)),
     averageQueueDelayMs: Number(averageQueueDelayMs.toFixed(1)),
     averageLagMs: Number(averageLagMs.toFixed(1)),
+    maxComputeMs: Number((metrics.maxComputeMs || 0).toFixed(1)),
+    maxQueueDelayMs: Number((metrics.maxQueueDelayMs || 0).toFixed(1)),
+    slowFrameRatio: Number((slowFrameRatio * 100).toFixed(1)),
     performanceScore: score,
     issues,
   };
@@ -2556,7 +2565,15 @@ function App() {
   const [devStatsView, setDevStatsView] = useState("session");
   const [lastDoneResults, setLastDoneResults] = useState([]);
   const [onlinePlayers, setOnlinePlayers] = useState([]);
-  const performanceMetricsRef = useRef({ samples: 0, computeMs: 0, queueDelayMs: 0, lagMs: 0, slowFrames: 0 });
+  const performanceMetricsRef = useRef({
+    samples: 0,
+    computeMs: 0,
+    queueDelayMs: 0,
+    lagMs: 0,
+    slowFrames: 0,
+    maxComputeMs: 0,
+    maxQueueDelayMs: 0,
+  });
   const [devPerformance, setDevPerformance] = useState(() => createEmptyPerformanceTelemetry());
   const preparedLiveDataset = useMemo(() => prepareLiveDataset(dataset), [dataset]);
 
@@ -2681,9 +2698,14 @@ function App() {
     const point = getPoint(event);
     isDrawingRef.current = true;
     ctx.beginPath();
+    ctx.arc(point.x, point.y, Math.max(2, ctx.lineWidth / 2), 0, Math.PI * 2);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fill();
+    ctx.beginPath();
     ctx.moveTo(point.x, point.y);
     activeStrokeRef.current = { points: [point], erase: isErasing };
     strokesRef.current.push(activeStrokeRef.current);
+    drawingRevisionRef.current += 1;
   };
 
   const draw = (event) => {
@@ -2737,10 +2759,21 @@ function App() {
     ctx.lineJoin = "round";
 
     strokesRef.current.forEach((stroke) => {
-      if (!stroke || !Array.isArray(stroke.points) || stroke.points.length < 2) return;
-      ctx.beginPath();
+      if (!stroke || !Array.isArray(stroke.points) || stroke.points.length < 1) return;
       ctx.strokeStyle = stroke.erase ? "#ffffff" : "#111827";
+      ctx.fillStyle = ctx.strokeStyle;
       ctx.lineWidth = stroke.erase ? 32 : 20;
+
+      if (stroke.points.length === 1) {
+        const point = stroke.points[0];
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, Math.max(2, ctx.lineWidth / 2), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.closePath();
+        return;
+      }
+
+      ctx.beginPath();
       ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
       stroke.points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
       ctx.stroke();
@@ -2861,6 +2894,8 @@ function App() {
       metrics.computeMs += computeMs;
       metrics.queueDelayMs += queueDelayMs;
       metrics.lagMs += lagMs;
+      metrics.maxComputeMs = Math.max(metrics.maxComputeMs, computeMs);
+      metrics.maxQueueDelayMs = Math.max(metrics.maxQueueDelayMs, queueDelayMs);
       if (computeMs > 24 || queueDelayMs > 42) metrics.slowFrames += 1;
       setDevPerformance(derivePerformanceTelemetry(metrics));
     }
@@ -3146,6 +3181,9 @@ function App() {
                   <div>{devPerformance.averageComputeMs}ms compute</div>
                   <div>{devPerformance.averageQueueDelayMs}ms queue delay</div>
                   <div>{devPerformance.averageLagMs}ms lag estimate</div>
+                  <div>{devPerformance.maxComputeMs}ms worst compute</div>
+                  <div>{devPerformance.maxQueueDelayMs}ms worst queue delay</div>
+                  <div>{devPerformance.slowFrameRatio}% slow-frame rate</div>
                 </div>
               </div>
               <div className="stat">
