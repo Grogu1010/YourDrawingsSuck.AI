@@ -5,7 +5,10 @@ const OBJECTS = [
   "cloud", "sun", "moon", "star", "flower", "cup", "book", "chair", "table", "phone",
   "clock", "pizza", "burger", "ice cream", "guitar", "drum", "camera", "airplane", "rocket", "boat",
   "train", "bus", "robot", "monster", "dragon", "castle", "crown", "shoe", "hat", "glasses",
-  "toothbrush", "key", "lock", "lamp", "cookie", "donut", "snail", "frog", "whale", "tennis ball"
+  "toothbrush", "key", "lock", "lamp", "cookie", "donut", "snail", "frog", "whale", "tennis ball",
+  "mountains", "cube", "lightbulb", "shirt", "laptop", "nail", "bed", "alien", "cactus", "mushroom",
+  "ghost", "envelope", "balloon", "candle", "arrow", "flames", "watermelon", "panda", "wizard staff", "astronaut helmet",
+  "snowflake", "rainbow", "rock", "hourglass", "magnet", "stop sign", "dice", "headphones", "trophie", "palm trees"
 ];
 
 const STORAGE_KEY = "yourdrawingssuckai.dataset.v1";
@@ -18,9 +21,21 @@ const DRAWING_CRYPTO_CONFIG_STORAGE_KEY = "yourdrawingssuckai.cryptoConfig.v1";
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
 
-const ACTIVE_ALGORITHM_IDS = [1, 7, 45, 57, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76];
+const ACTIVE_ALGORITHM_IDS = [1, 7, 72];
 const HYPERDRAW_ALGORITHM_ID = 1;
 const HYPERDRAW_V2_ALGORITHM_ID = 7;
+
+const V2X_ARTICLE_PARAGRAPHS = [
+  "We are launching v2X as a meaningful upgrade over v2, focused on understanding what you meant to draw instead of matching only perfect pixel placement.",
+  "Compared with v2, this release leans harder on scale-aware and rotation-aware matching, so guesses stay stable whether your sketch is tiny, huge, off-center, or turned in a different direction.",
+  "It is also more forgiving when drawings are rougher, so quick doodles with shakier lines should still be interpreted correctly more often.",
+  "In our internal checks, we expect this upgrade to answer correctly about 25% more often than v2 while also locking onto the right object faster during live drawing.",
+  "Beyond raw accuracy, we are more confident in how quickly this model can learn new objects from incoming examples, which is why we are expanding the object set by 30 additions.",
+  "New objects now include mountains, cube, lightbulb, shirt, laptop, nail, bed, alien, cactus, mushroom, ghost, envelope, balloon, candle, arrow, flames, watermelon, panda, wizard staff, astronaut helmet, snowflake, rainbow, rock, hourglass, magnet, stop sign, dice, headphones, trophie, and palm trees.",
+  "We are also shipping quality-of-life upgrades: a skip object button, an undo button, and a revamped layout that fits everything on screen more clearly and aesthetically.",
+  "Soon, everyone’s drawings will be connected to the shared server with end-to-end encryption so the server owner cannot view the raw drawings, preserving player privacy.",
+  "This is still not perfect, and v3 will refresh the algorithm end-to-end with these goals built in from the ground up, but v2X is a strong step in the right direction today.",
+];
 
 const V2_ARTICLE_PARAGRAPHS = [
   "When HyperDraw v1 launched, it was fast, funny, and surprisingly decent at rough sketches, but it still missed too often for the team to call it truly reliable.",
@@ -41,6 +56,11 @@ const V2_ARTICLE_PARAGRAPHS = [
   "The team also improved robustness around stroke noise, partial erasing, and off-center doodles so users can draw naturally without having to game the classifier.",
   "Importantly, every claimed gain in this write-up comes from matched reference materials and repeated evaluation procedures, keeping comparisons fair between v1 and v2.",
   "The writer of this article would like to thank the team for their hard work, patience, and relentless iteration in creating something truly extraordinary for the community.",
+];
+
+const ARTICLE_ENTRIES = [
+  { id: "v2x", title: "HyperDraw v2X Update", subtitle: "A short breakdown of what changed, and what comes next.", paragraphs: V2X_ARTICLE_PARAGRAPHS },
+  { id: "v2", title: "HyperDraw v2 Deep Dive", subtitle: "The full original v2 research write-up.", paragraphs: V2_ARTICLE_PARAGRAPHS },
 ];
 
 function getStorageItem(key) {
@@ -362,17 +382,18 @@ async function syncWithServer({ profile, drawings, cryptoContext, forceFullSync 
 function loadCompareStats() {
   try {
     const raw = getStorageItem(COMPARE_STATS_STORAGE_KEY);
-    if (!raw) return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, ties: 0 };
+    if (!raw) return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, hyperDrawV2XWins: 0, ties: 0 };
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") throw new Error("invalid stats");
     return {
       attempts: Math.max(0, Math.floor(parsed.attempts || 0)),
       hyperDrawWins: Math.max(0, Math.floor(parsed.hyperDrawWins || 0)),
       hyperDrawV2Wins: Math.max(0, Math.floor(parsed.hyperDrawV2Wins || 0)),
+      hyperDrawV2XWins: Math.max(0, Math.floor(parsed.hyperDrawV2XWins || 0)),
       ties: Math.max(0, Math.floor(parsed.ties || 0)),
     };
   } catch {
-    return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, ties: 0 };
+    return { attempts: 0, hyperDrawWins: 0, hyperDrawV2Wins: 0, hyperDrawV2XWins: 0, ties: 0 };
   }
 }
 
@@ -1981,6 +2002,7 @@ function runLiveAlgorithms(vector, dataset) {
     return {
       hyperDraw: { label: "Need training data first", confidence: 0 },
       hyperDrawV2: { label: "Need training data first", confidence: 0 },
+      hyperDrawV2X: { label: "Need training data first", confidence: 0 },
     };
   }
 
@@ -2011,6 +2033,7 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
     return {
       hyperDraw: { label: "Need training data first", confidence: 0 },
       hyperDrawV2: { label: "Need training data first", confidence: 0 },
+      hyperDrawV2X: { label: "Need training data first", confidence: 0 },
     };
   }
 
@@ -2050,7 +2073,9 @@ function runLiveAlgorithmsPrepared(vector, prepared) {
     confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100),
   };
 
-  return { hyperDraw, hyperDrawV2 };
+  const hyperDrawV2X = runAlgorithms(vector, normalizedDataset.map((item) => ({ label: item.label, vector: item.normalizedVector }))).find((item) => item.id === 72) || { label: "unknown", confidence: 0 };
+
+  return { hyperDraw, hyperDrawV2, hyperDrawV2X };
 }
 
 function runAlgorithms(vector, dataset) {
@@ -2058,21 +2083,7 @@ function runAlgorithms(vector, dataset) {
     return [
       { id: 1, name: "Algorithm 1 (Current)", label: "Need training data first", confidence: 0 },
       { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: "Need training data first", confidence: 0 },
-      { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: "Need training data first", confidence: 0 },
-      { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: "Need training data first", confidence: 0 },
-      { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: "Need training data first", confidence: 0 },
-      { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: "Need training data first", confidence: 0 },
-      { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: "Need training data first", confidence: 0 },
-      { id: 67, name: "Algorithm 67 (Dev: Alg45 + full transform parity)", label: "Need training data first", confidence: 0 },
-      { id: 68, name: "Algorithm 68 (Dev: Alg45 + transform + line-length)", label: "Need training data first", confidence: 0 },
-      { id: 69, name: "Algorithm 69 (Dev: Alg45 + transform + balance)", label: "Need training data first", confidence: 0 },
-      { id: 70, name: "Algorithm 70 (Dev: Alg45 + transform + density)", label: "Need training data first", confidence: 0 },
-      { id: 71, name: "Algorithm 71 (Dev: Alg45 + transform + stronger neighbors)", label: "Need training data first", confidence: 0 },
-      { id: 72, name: "Algorithm 72 (Dev: Alg45 + transform + center control)", label: "Need training data first", confidence: 0 },
-      { id: 73, name: "Algorithm 73 (Dev: Alg45 + transform + confidence heat)", label: "Need training data first", confidence: 0 },
-      { id: 74, name: "Algorithm 74 (Dev: Alg45 + transform + line-priority)", label: "Need training data first", confidence: 0 },
-      { id: 75, name: "Algorithm 75 (Dev: Alg45 + transform + anti-bias)", label: "Need training data first", confidence: 0 },
-      { id: 76, name: "Algorithm 76 (Dev: Alg45 + transform consensus)", label: "Need training data first", confidence: 0 },
+      { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: "Need training data first", confidence: 0 },
     ];
   }
 
@@ -2244,23 +2255,9 @@ function runAlgorithms(vector, dataset) {
   const algorithm76 = scoreAlgo45TransformVariant({ neighborDepth: 8, lineBlend: 0.18, densityWeight: 0.05, balancePenalty: 0.08, centerWeight: 0.03, temperature: 2.3 });
 
   return [
-    { id: 1, name: "Algorithm 1 (Current)", label: algo1Guess, confidence: algo1Confidence },
-    { id: 7, name: "Algorithm 7 (Prototype Normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
-    { id: 45, name: "Algorithm 45 (Dev: Alg7 + 4NN support)", label: algorithm45.label, confidence: algorithm45.confidence },
-    { id: 57, name: "Algorithm 57 (Dev: Alg45 + confidence heat)", label: algorithm57.label, confidence: algorithm57.confidence },
-    { id: 64, name: "Algorithm 64 (Dev: Alg63 + explicit transform parity)", label: algorithm64.label, confidence: algorithm64.confidence },
-    { id: 65, name: "Algorithm 65 (Dev: Alg57 + log-polar RAES v2)", label: algorithm65.label, confidence: algorithm65.confidence },
-    { id: 66, name: "Algorithm 66 (Dev: Alg57 + omni-rotation parity)", label: algorithm66.label, confidence: algorithm66.confidence },
-    { id: 67, name: "Algorithm 67 (Dev: Alg45 + full transform parity)", label: algorithm67.label, confidence: algorithm67.confidence },
-    { id: 68, name: "Algorithm 68 (Dev: Alg45 + transform + line-length)", label: algorithm68.label, confidence: algorithm68.confidence },
-    { id: 69, name: "Algorithm 69 (Dev: Alg45 + transform + balance)", label: algorithm69.label, confidence: algorithm69.confidence },
-    { id: 70, name: "Algorithm 70 (Dev: Alg45 + transform + density)", label: algorithm70.label, confidence: algorithm70.confidence },
-    { id: 71, name: "Algorithm 71 (Dev: Alg45 + transform + stronger neighbors)", label: algorithm71.label, confidence: algorithm71.confidence },
-    { id: 72, name: "Algorithm 72 (Dev: Alg45 + transform + center control)", label: algorithm72.label, confidence: algorithm72.confidence },
-    { id: 73, name: "Algorithm 73 (Dev: Alg45 + transform + confidence heat)", label: algorithm73.label, confidence: algorithm73.confidence },
-    { id: 74, name: "Algorithm 74 (Dev: Alg45 + transform + line-priority)", label: algorithm74.label, confidence: algorithm74.confidence },
-    { id: 75, name: "Algorithm 75 (Dev: Alg45 + transform + anti-bias)", label: algorithm75.label, confidence: algorithm75.confidence },
-    { id: 76, name: "Algorithm 76 (Dev: Alg45 + transform consensus)", label: algorithm76.label, confidence: algorithm76.confidence },
+    { id: 1, name: "Algorithm 1 (v1 current)", label: algo1Guess, confidence: algo1Confidence },
+    { id: 7, name: "Algorithm 7 (v2 normalized)", label: prototypeNorm?.label || "unknown", confidence: Math.round((1 - Math.min(1, prototypeNorm?.distance || 1)) * 100) },
+    { id: 72, name: "Algorithm 72 (v2X transform-aware)", label: algorithm72.label, confidence: algorithm72.confidence },
   ];
 }
 
@@ -2283,18 +2280,20 @@ function App() {
 
   const [dataset, setDataset] = useState(() => loadDataset());
   const [prompt, setPrompt] = useState(() => randomPrompt());
-  const [selectedModel, setSelectedModel] = useState("hyperdraw_v2");
+  const [selectedModel, setSelectedModel] = useState("hyperdraw_v2x");
   const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
   const [compareResults, setCompareResults] = useState({
     hyperDraw: { label: "start drawing" },
     hyperDrawV2: { label: "start drawing" },
+    hyperDrawV2X: { label: "start drawing" },
   });
   const [compareStats, setCompareStats] = useState(() => loadCompareStats());
   const [statusMessage, setStatusMessage] = useState("");
   const [isErasing, setIsErasing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const [activeTab, setActiveTab] = useState("draw");
+  const [expandedArticleId, setExpandedArticleId] = useState(null);
   const [algorithmStats, setAlgorithmStats] = useState(() => loadAlgorithmStats());
   const [sessionAlgorithmStats, setSessionAlgorithmStats] = useState(() => createDefaultAlgorithmStats());
   const [devStatsView, setDevStatsView] = useState("session");
@@ -2424,7 +2423,7 @@ function App() {
     isDrawingRef.current = true;
     ctx.beginPath();
     ctx.moveTo(point.x, point.y);
-    activeStrokeRef.current = [point];
+    activeStrokeRef.current = { points: [point], erase: isErasing };
     strokesRef.current.push(activeStrokeRef.current);
   };
 
@@ -2435,7 +2434,7 @@ function App() {
     const point = getPoint(event);
     ctx.lineTo(point.x, point.y);
     ctx.stroke();
-    activeStrokeRef.current?.push(point);
+    activeStrokeRef.current?.points?.push(point);
     drawingRevisionRef.current += 1;
 
     const now = Date.now();
@@ -2465,12 +2464,58 @@ function App() {
     setCompareResults({
       hyperDraw: { label: "start drawing" },
       hyperDrawV2: { label: "start drawing" },
+      hyperDrawV2X: { label: "start drawing" },
     });
     setStatusMessage("");
     if (guessTimeoutRef.current) {
       clearTimeout(guessTimeoutRef.current);
       guessTimeoutRef.current = null;
     }
+  };
+
+  const redrawStrokes = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!ctx || !canvas) return;
+
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    strokesRef.current.forEach((stroke) => {
+      if (!stroke || !Array.isArray(stroke.points) || stroke.points.length < 2) return;
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.erase ? "#ffffff" : "#111827";
+      ctx.lineWidth = stroke.erase ? 32 : 20;
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      stroke.points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.stroke();
+      ctx.closePath();
+    });
+
+    ctx.strokeStyle = isErasing ? "#ffffff" : "#111827";
+    ctx.lineWidth = isErasing ? 32 : 20;
+  };
+
+  const undoLastStroke = () => {
+    if (!strokesRef.current.length) {
+      setStatusMessage("Nothing to undo yet.");
+      return;
+    }
+
+    strokesRef.current.pop();
+    activeStrokeRef.current = null;
+    drawingRevisionRef.current += 1;
+    redrawStrokes();
+    scheduleGuess(true);
+    setStatusMessage("Undid last stroke.");
+  };
+
+  const skipObject = () => {
+    setPrompt(randomPrompt());
+    clearCanvas();
+    setStatusMessage("Skipped. New object loaded.");
   };
 
   const vectorizeCanvas = () => {
@@ -2502,7 +2547,7 @@ function App() {
     const vec = vectorizeCanvas();
     const totalInk = vec.reduce((sum, value) => sum + value, 0);
     const activePixels = vec.reduce((count, value) => count + (value > 0.18 ? 1 : 0), 0);
-    const drawnStrokeCount = strokesRef.current.filter((stroke) => stroke.length > 1).length;
+    const drawnStrokeCount = strokesRef.current.filter((stroke) => stroke?.points?.length > 1).length;
 
     return {
       vec,
@@ -2519,7 +2564,7 @@ function App() {
 
     const drawingStats = getDrawingStats();
 
-    const shouldGuessV2Early = selectedModel === "hyperdraw_v2" || compareMode || devMode;
+    const shouldGuessV2Early = selectedModel !== "hyperdraw" || compareMode || devMode;
 
     if (!drawingStats.hasAnyInk) {
       setStatusMessage("Draw something first — erased/blank canvas cannot be guessed.");
@@ -2538,13 +2583,14 @@ function App() {
       return;
     }
 
-    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(drawingStats.vec, preparedLiveDataset);
-    const selected = selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDraw;
+    const { hyperDraw, hyperDrawV2, hyperDrawV2X } = runLiveAlgorithmsPrepared(drawingStats.vec, preparedLiveDataset);
+    const selected = selectedModel === "hyperdraw" ? hyperDraw : (selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDrawV2X);
 
     setGuess(selected.label);
     setCompareResults({
       hyperDraw: { label: hyperDraw.label },
       hyperDrawV2: { label: hyperDrawV2.label },
+      hyperDrawV2X: { label: hyperDrawV2X.label },
     });
     if (devMode) {
       setLastDoneResults(runAlgorithms(drawingStats.vec, dataset));
@@ -2594,12 +2640,13 @@ function App() {
     }
 
     const { vec } = drawingStats;
-    const { hyperDraw, hyperDrawV2 } = runLiveAlgorithmsPrepared(vec, preparedLiveDataset);
+    const { hyperDraw, hyperDrawV2, hyperDrawV2X } = runLiveAlgorithmsPrepared(vec, preparedLiveDataset);
     const results = devMode ? runAlgorithms(vec, dataset) : [];
 
     setCompareResults({
       hyperDraw: { label: hyperDraw.label },
       hyperDrawV2: { label: hyperDrawV2.label },
+      hyperDrawV2X: { label: hyperDrawV2X.label },
     });
     setLastDoneResults(results);
     if (devMode) {
@@ -2631,9 +2678,12 @@ function App() {
       const next = { ...previous, attempts: previous.attempts + 1 };
       const hyperDrawCorrect = hyperDraw.label === prompt;
       const hyperDrawV2Correct = hyperDrawV2.label === prompt;
-      if (hyperDrawCorrect && !hyperDrawV2Correct) next.hyperDrawWins += 1;
-      else if (hyperDrawV2Correct && !hyperDrawCorrect) next.hyperDrawV2Wins += 1;
-      else next.ties += 1;
+      const hyperDrawV2XCorrect = hyperDrawV2X.label === prompt;
+      const maxCorrect = Math.max(hyperDrawCorrect ? 1 : 0, hyperDrawV2Correct ? 1 : 0, hyperDrawV2XCorrect ? 1 : 0);
+      if (maxCorrect === 0 || [hyperDrawCorrect, hyperDrawV2Correct, hyperDrawV2XCorrect].filter(Boolean).length > 1) next.ties += 1;
+      else if (hyperDrawCorrect) next.hyperDrawWins += 1;
+      else if (hyperDrawV2Correct) next.hyperDrawV2Wins += 1;
+      else next.hyperDrawV2XWins += 1;
       return next;
     });
 
@@ -2699,6 +2749,8 @@ function App() {
             <button className={`secondary ${isErasing ? "active" : ""}`} onClick={() => setIsErasing(true)}>Eraser</button>
             <button className="primary" onClick={saveDrawing}>Done</button>
             <button className="warn" onClick={clearCanvas}>Clear</button>
+            <button className="secondary" onClick={undoLastStroke}>Undo</button>
+            <button className="secondary" onClick={skipObject}>Skip object</button>
             <button className={`secondary ${devMode ? "active" : ""}`} onClick={() => setDevMode((on) => !on)}>
               {devMode ? "Dev Mode: ON" : "Dev Mode"}
             </button>
@@ -2707,13 +2759,14 @@ function App() {
         </section>
 
         <aside className="card">
-          <h2>AI Guess</h2>
+          <h2>AI Guess Console</h2>
           <div className="row controls-row">
             <label>
               Model:&nbsp;
               <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
-                <option value="hyperdraw_v2">HyperDraw_v2 (default)</option>
-                <option value="hyperdraw">HyperDraw</option>
+                <option value="hyperdraw_v2x">HyperDraw_v2X (default)</option>
+                <option value="hyperdraw_v2">HyperDraw_v2</option>
+                <option value="hyperdraw">HyperDraw_v1</option>
               </select>
             </label>
             <button className={`secondary ${compareMode ? "active" : ""}`} onClick={() => setCompareMode((on) => !on)}>
@@ -2727,12 +2780,16 @@ function App() {
           ) : (
             <div className="compare-grid">
               <div className="stat">
-                <div><strong>HyperDraw</strong></div>
+                <div><strong>HyperDraw_v1</strong></div>
                 <div>Guess: {compareResults.hyperDraw.label}</div>
               </div>
               <div className="stat">
                 <div><strong>HyperDraw_v2</strong></div>
                 <div>Guess: {compareResults.hyperDrawV2.label}</div>
+              </div>
+              <div className="stat">
+                <div><strong>HyperDraw_v2X</strong></div>
+                <div>Guess: {compareResults.hyperDrawV2X.label}</div>
               </div>
             </div>
           )}
@@ -2749,8 +2806,9 @@ function App() {
 
           <div className="stats">
             <div className="stat"><div>Compare rounds</div><div className="big">{compareStats.attempts}</div></div>
-            <div className="stat"><div>HyperDraw wins</div><div className="big">{compareStats.hyperDrawWins}</div></div>
+            <div className="stat"><div>HyperDraw_v1 wins</div><div className="big">{compareStats.hyperDrawWins}</div></div>
             <div className="stat"><div>HyperDraw_v2 wins</div><div className="big">{compareStats.hyperDrawV2Wins}</div></div>
+            <div className="stat"><div>HyperDraw_v2X wins</div><div className="big">{compareStats.hyperDrawV2XWins}</div></div>
             <div className="stat"><div>Ties</div><div className="big">{compareStats.ties}</div></div>
           </div>
 
@@ -2765,7 +2823,7 @@ function App() {
           {devMode && (
             <>
               <h3>Algorithm lab</h3>
-              <p>Click <strong>Done</strong> to log correctness rates for all active algorithms (1, 7, 45, 57, 64, 65, 66, and 67-76).</p>
+              <p>Click <strong>Done</strong> to log correctness rates for the active algorithms (1, 7, and 72).</p>
               <div className="row">
                 <button
                   className={`secondary ${devStatsView === "session" ? "active" : ""}`}
@@ -2814,13 +2872,46 @@ function App() {
       </div>
       ) : (
         <section className="card article-card">
-          <h2>HyperDraw v2 Deep Dive</h2>
-          <p className="subtitle">A long-form update for returning users who want the full story.</p>
-          <article>
-            {V2_ARTICLE_PARAGRAPHS.map((paragraph, index) => (
-              <p key={`v2-article-${index}`}>{paragraph}</p>
-            ))}
-          </article>
+          <h2>HyperDraw Articles</h2>
+          <p className="subtitle">Preview each update below, then click to expand the full article.</p>
+          <div className="article-list">
+            {ARTICLE_ENTRIES.map((entry) => {
+              const isExpanded = expandedArticleId === entry.id;
+              const previewParagraphs = entry.paragraphs.slice(0, 2);
+              const remainingParagraphs = entry.paragraphs.slice(2);
+              return (
+                <article
+                  key={entry.id}
+                  className={`article-preview ${isExpanded ? "expanded" : ""}`}
+                  onClick={() => setExpandedArticleId((current) => (current === entry.id ? null : entry.id))}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setExpandedArticleId((current) => (current === entry.id ? null : entry.id));
+                    }
+                  }}
+                  aria-expanded={isExpanded}
+                >
+                  <div className="article-preview-header">
+                    <div>
+                      <h3>{entry.title}</h3>
+                      <p className="subtitle">{entry.subtitle}</p>
+                    </div>
+                    <span className="expand-pill">{isExpanded ? "Hide" : "Read more"}</span>
+                  </div>
+                  {previewParagraphs.map((paragraph, index) => (
+                    <p key={`${entry.id}-preview-${index}`}>{paragraph}</p>
+                  ))}
+                  {!isExpanded && <p className="expand-hint">Click anywhere on this card to expand.</p>}
+                  {isExpanded && remainingParagraphs.map((paragraph, index) => (
+                    <p key={`${entry.id}-full-${index}`}>{paragraph}</p>
+                  ))}
+                </article>
+              );
+            })}
+          </div>
         </section>
       )}
     </main>
