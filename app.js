@@ -21,6 +21,7 @@ const DEV_TRAINING_MODE_STORAGE_KEY = "yourdrawingssuckai.devTrainingMode.v1";
 
 const COMPARE_STATS_STORAGE_KEY = "yourdrawingssuckai.modelCompareStats.v1";
 const GRID_SIZE = 16;
+const MIN_POINT_DISTANCE_SQ = 9;
 
 const ACTIVE_ALGORITHM_IDS = [1, 7, 72, 77];
 const HYPERDRAW_ALGORITHM_ID = 1;
@@ -2713,9 +2714,19 @@ function App() {
     event.preventDefault();
     const ctx = canvasContextRef.current || canvasRef.current.getContext("2d");
     const point = getPoint(event);
+    const activeStroke = activeStrokeRef.current;
+    const points = activeStroke?.points;
+    const previousPoint = points?.[points.length - 1];
+
+    if (previousPoint) {
+      const dx = point.x - previousPoint.x;
+      const dy = point.y - previousPoint.y;
+      if (dx * dx + dy * dy < MIN_POINT_DISTANCE_SQ) return;
+    }
+
     ctx.lineTo(point.x, point.y);
     ctx.stroke();
-    activeStrokeRef.current?.points?.push(point);
+    points?.push(point);
     drawingRevisionRef.current += 1;
   };
 
