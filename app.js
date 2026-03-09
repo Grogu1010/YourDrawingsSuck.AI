@@ -2879,10 +2879,11 @@ function App() {
   const [selectedModel, setSelectedModel] = useState("hyperdraw_v2x");
   const [compareMode, setCompareMode] = useState(false);
   const [guess, setGuess] = useState("start drawing");
+  const [guessConfidence, setGuessConfidence] = useState(0);
   const [compareResults, setCompareResults] = useState({
-    hyperDraw: { label: "start drawing" },
-    hyperDrawV2: { label: "start drawing" },
-    hyperDrawV2X: { label: "start drawing" },
+    hyperDraw: { label: "start drawing", confidence: 0 },
+    hyperDrawV2: { label: "start drawing", confidence: 0 },
+    hyperDrawV2X: { label: "start drawing", confidence: 0 },
   });
   const [compareStats, setCompareStats] = useState(() => loadCompareStats());
   const [statusMessage, setStatusMessage] = useState("");
@@ -3091,10 +3092,11 @@ function App() {
     activeStrokeRef.current = null;
     drawingRevisionRef.current += 1;
     setGuess("start drawing");
+    setGuessConfidence(0);
     setCompareResults({
-      hyperDraw: { label: "start drawing" },
-      hyperDrawV2: { label: "start drawing" },
-      hyperDrawV2X: { label: "start drawing" },
+      hyperDraw: { label: "start drawing", confidence: 0 },
+      hyperDrawV2: { label: "start drawing", confidence: 0 },
+      hyperDrawV2X: { label: "start drawing", confidence: 0 },
     });
     setStatusMessage("");
     if (guessTimeoutRef.current) {
@@ -3223,6 +3225,7 @@ function App() {
 
     if (dataset.length === 0) {
       setGuess("Need training data first");
+      setGuessConfidence(0);
       setStatusMessage("Train me with a few drawings before guessing.");
       setLastDoneResults([]);
       return;
@@ -3233,10 +3236,11 @@ function App() {
     const selected = selectedModel === "hyperdraw" ? hyperDraw : (selectedModel === "hyperdraw_v2" ? hyperDrawV2 : hyperDrawV2X);
 
     setGuess(selected.label);
+    setGuessConfidence(selected.confidence || 0);
     setCompareResults({
-      hyperDraw: { label: hyperDraw.label },
-      hyperDrawV2: { label: hyperDrawV2.label },
-      hyperDrawV2X: { label: hyperDrawV2X.label },
+      hyperDraw: { label: hyperDraw.label, confidence: hyperDraw.confidence || 0 },
+      hyperDrawV2: { label: hyperDrawV2.label, confidence: hyperDrawV2.confidence || 0 },
+      hyperDrawV2X: { label: hyperDrawV2X.label, confidence: hyperDrawV2X.confidence || 0 },
     });
     if (devMode) {
       setLastDoneResults(runAlgorithms(drawingStats.vec, dataset));
@@ -3292,7 +3296,9 @@ function App() {
     }
 
     const indexedDataset = dataset.map((item, index) => ({ ...item, sourceIndex: index }));
-    const selectedDrawings = sampleSize ? pickRandomItems(indexedDataset, sampleSize) : indexedDataset;
+    const selectedDrawings = sampleSize
+      ? pickRandomItems(indexedDataset, sampleSize)
+      : pickRandomItems(indexedDataset, indexedDataset.length);
 
     if (!selectedDrawings.length) {
       setStatusMessage("No drawings selected for dev test run.");
@@ -3316,11 +3322,6 @@ function App() {
     for (let i = 0; i < selectedDrawings.length; i += 1) {
       if (devTestStopRequestedRef.current) break;
 
-    setDevTestRunning(true);
-    setDevTestProgress({ processed: 0, total: selectedDrawings.length });
-    setStatusMessage(`Running dev test over ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}...`);
-
-    for (let i = 0; i < selectedDrawings.length; i += 1) {
       const drawing = selectedDrawings[i];
       const trainingDataset = indexedDataset.filter((item) => item.sourceIndex !== drawing.sourceIndex);
       if (!trainingDataset.length) continue;
@@ -3426,9 +3427,6 @@ function App() {
     return () => clearInterval(timer);
   }, [devTestRunning]);
 
-    setStatusMessage(`Dev test complete. Evaluated ${selectedDrawings.length} drawing${selectedDrawings.length === 1 ? "" : "s"}.`);
-  };
-
   useEffect(() => {
     saveDevTrainingMode(trainingMode);
   }, [trainingMode]);
@@ -3456,9 +3454,9 @@ function App() {
     const results = devMode ? runAlgorithms(vec, dataset) : [];
 
     setCompareResults({
-      hyperDraw: { label: hyperDraw.label },
-      hyperDrawV2: { label: hyperDrawV2.label },
-      hyperDrawV2X: { label: hyperDrawV2X.label },
+      hyperDraw: { label: hyperDraw.label, confidence: hyperDraw.confidence || 0 },
+      hyperDrawV2: { label: hyperDrawV2.label, confidence: hyperDrawV2.confidence || 0 },
+      hyperDrawV2X: { label: hyperDrawV2X.label, confidence: hyperDrawV2X.confidence || 0 },
     });
     setLastDoneResults(results);
     if (devMode) {
@@ -3660,20 +3658,24 @@ function App() {
           {!compareMode ? (
             <>
               <p className="big">{guess}</p>
+              {devMode && <p>Confidence: {guessConfidence}%</p>}
             </>
           ) : (
             <div className="compare-grid">
               <div className="stat">
                 <div><strong>HyperDraw_v1</strong></div>
                 <div>Guess: {compareResults.hyperDraw.label}</div>
+                {devMode && <div>Confidence: {compareResults.hyperDraw.confidence}%</div>}
               </div>
               <div className="stat">
                 <div><strong>HyperDraw_v2</strong></div>
                 <div>Guess: {compareResults.hyperDrawV2.label}</div>
+                {devMode && <div>Confidence: {compareResults.hyperDrawV2.confidence}%</div>}
               </div>
               <div className="stat">
                 <div><strong>HyperDraw_v2X</strong></div>
                 <div>Guess: {compareResults.hyperDrawV2X.label}</div>
+                {devMode && <div>Confidence: {compareResults.hyperDrawV2X.confidence}%</div>}
               </div>
             </div>
           )}
@@ -3734,6 +3736,7 @@ function App() {
               <div className="row">
                 <button className="secondary" onClick={startDevTestWithPromptedSample} disabled={devTestRunning}>
                   Dev Test {Math.max(1, Math.floor(devTestSampleSize || 1))}
+                </button>
                 <button className="secondary" onClick={() => runDevModelSweep({ sampleSize: DEV_TEST_SAMPLE_SIZE })} disabled={devTestRunning}>
                   Dev Test {DEV_TEST_SAMPLE_SIZE}
                 </button>
